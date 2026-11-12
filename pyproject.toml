@@ -39,6 +39,10 @@ ignore = [
     "UP031",
 ]
 
+[tool.ty.environment]
+# scripts/ 下是开发期工具（facts.py 等），tests/ 会 import 它们
+extra-paths = ["scripts"]
+
 [tool.ty.rules]
 import-not-found = "error"
 unresolved-reference = "error"

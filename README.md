@@ -129,10 +129,17 @@ python3 tests/test_backends.py "$(pwd)"             # 58 项 + 装了 tree-sitte
 uv sync                          # 建 .venv（Python 3.13），装 ruff / ty / pytest
 uv run ruff check .              # 静态检查：E,F,W,I,N,UP,B,SIM
 uv run ty check .                # 类型检查
-uv run pytest                    # 自动造样例仓库并跑完 145 项检查
+uv run pytest                    # 自动造样例仓库并跑完 145 项检查（脚本）+ 单元测试
 uv run pytest -q                 # 同上，静默模式
 uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
+uv run python scripts/update_facts.py           # 同步文档里的数字（检查项数/模块数/行数）
+uv run python scripts/update_facts.py --check   # 只校验：数字过期或链接悬空则退出 1
 ```
+
+**文档里的数字由脚本管**。README 与 `docs/` 里那些会变的事实（多少项检查、多少个模块、
+多少行代码）不是手写的：`scripts/facts.py` 是唯一的计算入口，`scripts/update_facts.py`
+按上下文锚点就地改写文档，`tests/test_facts.py` 是闸门——数字过期或链接悬空，测试直接红。
+所以"加了几项检查忘了改文档"这类事不会再发生。
 
 **渐进迁移到 Rust**：把 ctxguard 按职责切成若干独立切片、逐片迁到 Rust 的设计——
 切分方式、接口契约、迁移顺序、对拍护栏与验收标准，见
