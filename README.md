@@ -123,6 +123,10 @@ uv run pytest -q                 # 同上，静默模式
 uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
 ```
 
+**渐进迁移到 Rust**：把 ctxguard 按职责切成若干独立切片、逐片迁到 Rust 的设计——
+切分方式、接口契约、迁移顺序、对拍护栏与验收标准，见
+[`docs/rust-migration.md`](docs/rust-migration.md)。
+
 **工具注册表**：`tools.py` 末尾的 `TOOLS` 是 `tree / outline / read / search / symbols` 的唯一
 声明处——CLI 子命令（`index.py`）和 MCP 工具列表（`server.py`）都从它生成，参数与协议 schema
 也出自同一张表。加一个工具只改这一处，不会出现“实现了但协议里没有”或“schema 与实现漂移”。
