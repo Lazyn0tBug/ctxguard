@@ -597,6 +597,11 @@ TOOLS: tuple[Tool, ...] = (
 
 BY_NAME = {t.name: t for t in TOOLS}
 
+# 各工具实现里存在、但**刻意不暴露**给调用方的参数（内部上限之类）。
+# 列在这里是为了让测试能断言"实现多出来的参数只有这些"——否则悄悄多一个参数
+# 就会永远走默认值，没人发现。
+INTERNAL_PARAMS = {"tree": {"maxrows"}}
+
 
 def tool_schema(tool: Tool) -> dict[str, Any]:
     """MCP 的 inputSchema：从参数声明生成。"""
@@ -617,6 +622,18 @@ def tool_schema(tool: Tool) -> dict[str, Any]:
 
 
 def call_tool(tool: Tool, root: str, values: dict[str, Any]) -> str:
-    """按注册表调用工具：只传该工具声明过的参数，缺的用默认值补上。"""
-    kwargs = {a.name: values.get(a.name, a.default) for a in tool.args}
+    """按注册表调用工具：只传该工具声明过的参数。
+
+    必填参数缺失（或显式为 null）直接报错，不静默补默认值——补默认值会把
+    "outline 少了 path"变成"列出整个项目根"，把一次调用错误伪装成成功。
+    MCP 侧会把这个异常变成 isError，客户端能看见。
+    """
+    kwargs: dict[str, Any] = {}
+    for a in tool.args:
+        if values.get(a.name) is not None:
+            kwargs[a.name] = values[a.name]
+        elif a.required:
+            raise ValueError("工具 %s 缺少必填参数 %s" % (tool.name, a.name))
+        else:
+            kwargs[a.name] = a.default
     return tool.fn(root, **kwargs)

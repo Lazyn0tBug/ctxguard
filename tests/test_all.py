@@ -170,6 +170,8 @@ r = rpc(5, "tools/call", {"name": "search", "arguments": {"pattern": "Worker3"}}
 check("MCP search", "core/worker.rs" in r["result"]["content"][0]["text"], str(r)[:300])
 r = rpc(6, "tools/call", {"name": "nope", "arguments": {}})
 check("MCP 未知工具 → isError", r["result"]["isError"])
+r = rpc(8, "tools/call", {"name": "outline", "arguments": {}})
+check("MCP 缺必填参数 → isError（不返回目录树）", r["result"]["isError"], str(r)[:200])
 r = rpc(7, "unknown/method")
 check("MCP 未知方法 → error", "error" in r)
 srv_in.close()

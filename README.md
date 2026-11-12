@@ -111,11 +111,11 @@ python3 .claude/ctxguard/index.py compare <文件>    # 启发式 vs 后端 的�
 
 ## 测试
 
-两支脚本测试（86 项端到端 + 58 项后端）也可以直接跑：
+两支脚本测试（87 项端到端 + 58 项后端）也可以直接跑：
 
 ```bash
 python3 tests/gen_sample.py /tmp/sample && (cd /tmp/sample && git add -A)
-python3 tests/test_all.py "$(pwd)" /tmp/sample      # 86 项：索引、hook、预算、MCP、代理
+python3 tests/test_all.py "$(pwd)" /tmp/sample      # 87 项：索引、hook、预算、MCP、代理
 python3 tests/test_backends.py "$(pwd)"             # 58 项 + 装了 tree-sitter 后追加的真实语法自检
 ```
 
@@ -129,7 +129,7 @@ python3 tests/test_backends.py "$(pwd)"             # 58 项 + 装了 tree-sitte
 uv sync                          # 建 .venv（Python 3.13），装 ruff / ty / pytest
 uv run ruff check .              # 静态检查：E,F,W,I,N,UP,B,SIM
 uv run ty check .                # 类型检查
-uv run pytest                    # 自动造样例仓库并跑完 144 项检查
+uv run pytest                    # 自动造样例仓库并跑完 145 项检查
 uv run pytest -q                 # 同上，静默模式
 uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
 ```

@@ -14,15 +14,17 @@ echo '{"cwd":"'$PWD'"}' | python3 .claude/ctxguard/hook_session.py | head -3
 # 2. 索引活着吗？
 python3 .claude/ctxguard/index.py tree
 
-# 3. hook 用的解释器够新吗？（读 settings.json 里实际写的那条命令）
-grep '"command"' .claude/settings.json
-python3 --version          # 必须 >= 3.13
+# 3. hook 用的解释器够新吗？
+grep '"command"' .claude/settings.json    # 先看清楚用的是哪个解释器
+python3.13 --version      # 再问**那个**解释器的版本，必须 >= 3.13
 ```
 
 - 第 1 步没输出 → hook 脚本本身起不来（解释器版本不对、或文件没复制全），看 §2.1
 - 第 1 步有输出、第 2 步没输出 → 索引没建起来，看 §2.4
 - 第 3 步版本 < 3.13 → hook 会在 import 期就崩，而 hook 的兜底是**放行**（fail-open），
   于是表现为"约束完全不生效"。用 `python3.13 install.py <项目>` 重装即可
+- ⚠️ 要问的是 **hook 命令里那个解释器**的版本，不是 PATH 上 `python3` 的版本——两者常常
+  不是同一个（PATH 上的 `python3` 可能还是 3.9，而 hook 用的是 `python3.13`）
 
 ## 1. 三道闸各自的验证方法
 
