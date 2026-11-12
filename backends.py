@@ -78,12 +78,13 @@ def expand(spec: str | list[str] | None) -> list[str]:
         if not isinstance(x, str) or not x.strip():
             continue
         x = x.strip()
-        if x.lower() in ("off", "none", "false"):
-            return []
-        if x.lower() == "auto":
-            out.extend(AUTO)
-        else:
-            out.append(x)
+        match x.lower():
+            case "off" | "none" | "false":
+                return []
+            case "auto":
+                out.extend(AUTO)
+            case _:
+                out.append(x)
     seen, res = set(), []
     for x in out:
         if x not in seen:

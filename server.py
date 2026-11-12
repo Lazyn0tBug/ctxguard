@@ -51,26 +51,28 @@ TOOLS = [
 
 def call(name, a):
     global served
-    if name == "tree":
-        return tools.t_tree(ROOT, a.get("path", "."), a.get("depth", 2))
-    if name == "outline":
-        return tools.t_outline(ROOT, a["path"])
-    if name == "read":
-        text = tools.t_read(ROOT, a["path"], a.get("start"), a.get("end"))
-        if text.startswith(("REFUSED", "ERROR")):
+    match name:
+        case "tree":
+            return tools.t_tree(ROOT, a.get("path", "."), a.get("depth", 2))
+        case "outline":
+            return tools.t_outline(ROOT, a["path"])
+        case "read":
+            text = tools.t_read(ROOT, a["path"], a.get("start"), a.get("end"))
+            if text.startswith(("REFUSED", "ERROR")):
+                return text
+            tok = lib.est_tokens(text)
+            if BUDGET > 0 and served + tok > BUDGET:
+                return (f"REFUSED: 本会话已通过 ctxguard 读取约 {served}tok，预算 {BUDGET}tok 用尽。"
+                        "请把需要通读的材料交给子 agent（只让它返回结论和 路径:行号），或 /compact、/clear 后继续。")
+            served += tok
             return text
-        tok = lib.est_tokens(text)
-        if BUDGET > 0 and served + tok > BUDGET:
-            return (f"REFUSED: 本会话已通过 ctxguard 读取约 {served}tok，预算 {BUDGET}tok 用尽。"
-                    "请把需要通读的材料交给子 agent（只让它返回结论和 路径:行号），或 /compact、/clear 后继续。")
-        served += tok
-        return text
-    if name == "search":
-        return tools.t_search(ROOT, a["pattern"], a.get("path", "."), a.get("mode", "auto"),
-                              a.get("limit", 40), a.get("glob"))
-    if name == "symbols":
-        return tools.t_symbols(ROOT, a.get("query", ""), a.get("path"), a.get("limit", 50))
-    raise ValueError(f"未知工具：{name}")
+        case "search":
+            return tools.t_search(ROOT, a["pattern"], a.get("path", "."), a.get("mode", "auto"),
+                                  a.get("limit", 40), a.get("glob"))
+        case "symbols":
+            return tools.t_symbols(ROOT, a.get("query", ""), a.get("path"), a.get("limit", 50))
+        case _:
+            raise ValueError(f"未知工具：{name}")
 
 
 def send(obj):

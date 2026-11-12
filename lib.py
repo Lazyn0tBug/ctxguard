@@ -405,14 +405,15 @@ def _rst_headings(lines):
 
 
 def doc_pieces(lines, ext):
-    if ext == ".rst":
-        hs = _rst_headings(lines)
-    elif ext in (".adoc", ".asciidoc"):
-        hs = _re_headings(lines, r"^(={1,6})\s+(\S.*?)\s*=*\s*$")
-    elif ext == ".org":
-        hs = _re_headings(lines, r"^(\*+)\s+(\S.*)$")
-    else:
-        hs = _md_headings(lines)
+    match ext:
+        case ".rst":
+            hs = _rst_headings(lines)
+        case ".adoc" | ".asciidoc":
+            hs = _re_headings(lines, r"^(={1,6})\s+(\S.*?)\s*=*\s*$")
+        case ".org":
+            hs = _re_headings(lines, r"^(\*+)\s+(\S.*)$")
+        case _:
+            hs = _md_headings(lines)
     if not hs:
         return [(0, len(lines), "")], []
     pieces, syms, stack = [], [], []
