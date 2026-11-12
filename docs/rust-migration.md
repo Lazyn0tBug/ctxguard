@@ -19,8 +19,9 @@ ctxguard 由 12 个平铺的 Python 模块组成（约 2,800 行），靠 `insta
 **终局**：一个 Rust 二进制，承载全部功能（CLI / MCP / hook / 代理），
 Python 依赖彻底消失。
 
-**路径**：按职责切成 6 个切片，逐片迁移。每片是独立可执行文件，Python 侧探测到就用、
-探测不到就走原实现兜底，直到该片的 Python 实现退役。
+**路径**：按职责切成 6 个切片，逐片迁移。每片做成**库函数 + 薄 CLI**——库承载逻辑，
+薄 CLI 只做参数解析与序列化；Python 侧探测到薄 CLI 就用、探测不到就走原实现兜底，
+直到该片的 Python 实现退役。终局时主二进制把这些子命令整合进去，逻辑仍是同一份。
 
 **性能是副产品，不是目标**：Rust 带来的"简单"（单文件、类型强制、无解释器）
 才是迁移的主要收益。
@@ -97,12 +98,41 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
                     └─────────────────────────────────────────┘
 ```
 
-- **一个 crate**：`crates/ctxguard/`，`src/lib.rs` 是库（可测、可复用），`src/main.rs` 是 CLI。
+- **一个 crate，两种 CLI 形态**（见 §3.2）：`ctxguard-core` 库承载全部逻辑，
+  薄 CLI 只是"解析参数 → 调库 → 序列化"的适配器。
 - **Python 侧最终只剩**：可能连 `install.py` 都由 Rust 重写（`ctxguard install`）。
 - **CLI 表面保持不变**：子命令名、参数名、输出格式与现在的 `index.py` 逐字一致，
   这样 144 项黑盒测试可以**原样指向新二进制**（见 §6.1）。
 
-### 3.1 与现在相同、必须保持的外部约定
+### 3.1 lib + 薄 CLI：为什么这么切
+
+每个切片都做成 **库函数 + 薄 CLI** 两层：
+
+```
+crates/ctxguard/
+  src/lib.rs        # 库：分块、索引、扫描、hook 决策、MCP、代理——全部逻辑
+  src/chunk.rs      # 切片 A
+  src/index.rs      # 切片 B
+  src/scan.rs       # 切片 C
+  src/guard.rs      # 切片 E
+  src/mcp.rs        # 切片 F
+  src/cli/          # 切片 D：五个命令的实现
+  src/bin/
+    ctxguard-chunk.rs   # 薄 CLI（过渡期接口）
+    ctxguard-scan.rs    # 薄 CLI（过渡期接口）
+    ctxguard.rs         # 主 CLI（终局接口，子命令形式）
+```
+
+薄 CLI 只做三件事：解析参数 → 调库 → 序列化输出与退出码。收益：
+
+1. **库可被单元测试直接调用**，不必起进程——Rust 侧的行为验证成本大幅下降
+2. **过渡期与终局共用同一份逻辑**：薄 CLI 和主二进制调的是同一个库函数，
+   不存在"两套实现"（这是渐进迁移最容易埋的坑）
+3. **后期整合几乎免费**：终局的主二进制增加子命令即可，无需搬运逻辑；
+   各片规模都不大（最大的分块器约 350 行），纯 CLI 拼装也足够简单
+4. **对拍护栏可以在两侧同构地做**：Rust 侧对库函数断言，Python 侧对实现断言
+
+### 3.2 与现在相同、必须保持的外部约定
 
 | 约定 | 内容 |
 |---|---|
@@ -120,7 +150,9 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 
 ## 4. 切片定义
 
-每个切片是一个**独立的可执行文件或库单元**，通过 **stdin/stdout 的 JSON** 与 Python 侧交互。
+每个切片是 **库函数 + 薄 CLI**（§3.2）。迁移期，Python 通过 **stdin/stdout 的 JSON** 调用对应的薄 CLI；
+终局，主二进制把这些子命令整合进去。
+
 **Python 决定"做什么"，Rust 只负责"怎么做"**——职责边界划在数据上，不在消息上，
 这样跨语言不会产生行为分叉。
 
@@ -133,6 +165,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | Python 侧 | `lib.chunk_text` 先 `shutil.which("ctxguard-chunk")` 探测；在则调用并解析 JSON，不在则用现有实现 |
 | 退场条件 | 对拍 100% 一致后，删掉 Python 侧的分块启发式 |
 | 依赖 | 无（最底层） |
+| 形态 | 库函数 `core::chunk()` + 薄 CLI `ctxguard-chunk`（迁移期接口） |
 | 风险 | **中**：启发式正则含前瞻，Rust 的 `regex` crate 不支持（见 §8.1） |
 
 ### 切片 B：索引器
@@ -144,6 +177,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | Python 侧 | `lib.build` 优先调它；不再则走原实现 |
 | 退场条件 | 索引库内容与 Python 实现逐行一致（§6.2） |
 | 依赖 | A |
+| 形态 | 库函数 `core::build()` + 子命令 `ctxguard build`（与现有 CLI 同名同参） |
 | 风险 | 低（写库逻辑直白）；注意 `git ls-files` 的文件枚举与 `SKIP_DIRS` 剪枝要一致 |
 
 ### 切片 C：扫描器
@@ -155,6 +189,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | Python 侧 | `t_search` 负责决定"搜哪些文件"（复用 SQLite 的 `kind`/`size`/glob 规则），把清单交给 Rust 扫描；再把命中映射回段 |
 | 退场条件 | 命中结果与 Python 实现逐条一致 |
 | 依赖 | 无（只吃文件清单，不碰索引） |
+| 形态 | 库函数 `core::scan()` + 薄 CLI `ctxguard-scan`（迁移期接口） |
 | 风险 | 低。**关键设计**：文件清单由 Python 给，Rust 不自己决定搜什么 → 两边搜的文件集必然一致 |
 
 ### 切片 D：主 CLI
@@ -166,6 +201,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | Python 侧 | 无（这是终态接口，不是被调用的） |
 | 退场条件 | 144 项黑盒测试指向新二进制后全绿 |
 | 依赖 | A、B、C |
+| 形态 | 库函数 + 主二进制的子命令（`ctxguard tree` 等，参数与输出与现有 `index.py` 逐字一致） |
 | 风险 | 中。工具注册表（现在在 `tools.py` 的 `TOOLS`）在 Rust 里同样是一张静态表——**单源原则照搬** |
 
 ### 切片 E：hook 决策
@@ -177,7 +213,8 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | Python 侧 | 无 |
 | 退场条件 | 40 条 Bash 用例 + Read/Grep 用例逐条一致；**且** 拒绝消息逐字一致 |
 | 依赖 | 读 SQLite（渲染目录）→ 依赖 B 的索引格式 |
-| 风险 | **高**（见 §8.2），**因此排在最后** |
+| 形态 | 库函数 `core::guard()` + 子命令 `ctxguard guard`（读 stdin → 决策 → exit 0/2） |
+| 风险 | **高**（见 §8.2），**因此排在最后**——但这是风险排序，不是"要不要做"的疑问：Rust 完全能实现它 |
 
 ### 切片 F：MCP 服务与代理
 
@@ -187,6 +224,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | 接口 | 与现有 `server.py` / `proxy.py` 一致 |
 | 退场条件 | MCP 五个工具的响应与代理行为一致 |
 | 依赖 | D |
+| 形态 | 库函数 `core::mcp()` / `core::proxy()` + 子命令 `ctxguard mcp` / `ctxguard proxy -- CMD` |
 | 风险 | 低。长驻进程，启动开销无关紧要；**逻辑薄**，迁移收益主要在"少一个 Python 运行时" |
 
 ### 4.1 不迁移的部分（明确列出）
@@ -234,9 +272,16 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 
 ### 5.4 命令行表面
 
-保持与现有 `index.py` 逐字一致（`build` / `tree` / `outline` / `read` / `search` / `symbols` /
-`doctor` / `compare`，参数名与默认值不变），额外增加内部子命令 `chunk` / `scan` / `guard` /
-`mcp` / `proxy`。**这是"144 项黑盒测试可以原样指向新二进制"的前提。**
+CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二进制调同一个函数）：
+
+| 形态 | 何时用 | 例子 |
+|---|---|---|
+| **薄 CLI**（独立可执行文件） | 迁移期：被 Python 侧调用 | `ctxguard-chunk`、`ctxguard-scan` |
+| **主二进制**（子命令） | 终局：用户与 Claude Code 直接调用 | `ctxguard build tree outline read search symbols doctor compare chunk scan guard mcp proxy` |
+
+主二进制的子命令表面**保持与现有 `index.py` 逐字一致**（子命令名、参数名、默认值、输出格式），
+额外增加 `chunk` / `scan` / `guard` / `mcp` / `proxy`。**这是"144 项黑盒测试可以原样指向
+新二进制"的前提。**
 
 ## 6. 迁移顺序与验收
 
@@ -248,7 +293,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 | 1 | 切片 A（分块器） | 对拍 100% 一致；现有 144 项测试全绿 |
 | 2 | 切片 B（索引器） | 索引库三表与 Python 实现逐行一致；144 项全绿 |
 | 3 | 切片 C（扫描器）+ 修掉 §1.3 的连接复用问题 | 命中结果逐条一致；search 耗时达标；144 项全绿 |
-| 4 | 切片 D（主 CLI） | **144 项黑盒测试改指向二进制后全绿**；CLI 输出逐字一致 |
+| 4 | 切片 D（主 CLI） | 主二进制成形（库 + 子命令）；**144 项黑盒测试改指向二进制后全绿**；CLI 输出逐字一致 |
 | 5 | 切片 F（MCP / 代理） | MCP 五个工具响应一致；代理转存行为一致 |
 | 6 | 切片 E（hook） | Bash/Read/Grep 用例一致；拒绝消息逐字一致 |
 | 7 | Python 侧退役 | 运行时零 Python；`install.py` 简化；README 更新 |
@@ -330,7 +375,7 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
 |---|---|---|
 | 分发：二进制要按平台构建 | macOS arm64/x86_64、Linux gnu/musl、Windows | 渐进期"可选安装"（见 §10）；终局由 CI 出多平台产物 |
 | 行为漂移 | 模型看到的目录与拒绝消息变了 | 对拍护栏 + 144 项黑盒测试；差异必须归因 |
-| 迁移期双实现并存 | 代码量临时增加，看起来更复杂 | 明确这是**过渡态**；每片迁完即删 Python 侧 |
+| 迁移期双实现并存 | 代码量临时增加，看起来更复杂 | 明确这是**过渡态**；每片迁完即删 Python 侧。薄 CLI 与主二进制共用同一个库，不产生第三份实现 |
 | 树结构启发式的隐性知识 | `lib.py` 的 `_split_region` / `_merge` / `_windows` 逻辑微妙 | 迁移前先补 Python 侧的单元测试，把现有行为钉死 |
 | 插件用户 | 少数依赖自定义后端的人会失去能力 | README 明确说明；如确有需求，可保留一个 Python 侧"后端子进程"作为过渡 |
 
@@ -397,16 +442,23 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 | D5 | 性能不是目标，单一实现与无解释器依赖才是 |
 | D6 | 行为不变是硬约束，144 项黑盒测试是验收标准 |
 | D7 | 先写设计文档，评审后再开工 |
+| D8 | 每个 Rust 片都是**库函数 + 薄 CLI**；薄 CLI 只做参数解析、调用、序列化，后期整合即"加子命令" |
+| D9 | 后端不设"Python 子进程过渡"方案——迁移方向已决定它（见下） |
 
 ### 待定
 
 | # | 问题 | 影响 |
 |---|---|---|
 | Q1 | 切片 A 的正则前瞻：改写（倾向）还是用 `fancy-regex`？ | 决定 A 的实现难度与性能特征 |
-| Q2 | 迁移期是否保留 Python 侧的"后端子进程"作为插件过渡？ | 影响 D3 的实际冲击面 |
 | Q3 | 二进制的多平台产物由谁出（本地交叉编译 / CI）？ | 影响终局的分发可行性 |
-| Q4 | 切片 E 的 hook 是否值得迁？（它风险最高，而收益只是 27 ms → 3 ms） | 可能最终保留 Python hook，只迁其余 |
 | Q5 | 是否把"拒绝消息渲染"也放进 Rust（需要复刻 `outline_text` 格式） | 影响 E 的行为分叉风险 |
+
+### 已关闭的问题（不再是决策点）
+
+| 原编号 | 结论 | 理由 |
+|---|---|---|
+| Q2 | 后端是否保留 Python 子进程过渡？ | **不是决策点。** 迁移方向是 Python → Rust，"后端用 Python 还是 Rust"完全由 Rust 侧的实现进度决定：Rust 的 tree-sitter 后端落地之前，Python 后端就是唯一实现；落地之后它就是历史。中间态是迁移过程的自然产物，不需要预先设计过渡方案——为它设计接口反而是给自己加活。 |
+| Q4 | 切片 E 的 hook 是否值得迁？ | **要迁。** Rust 完全能实现它（读 SQLite 渲染目录、复刻 shlex 的切分语义、复刻拒绝消息格式），没有技术障碍。它排在最后是**风险排序**——shlex 的 `punctuation_chars` 语义最容易出微妙差异、而 fail-open 的行为又很敏感——不是"要不要做"的疑问。 |
 
 ## 附录 A：Rust 工程布局
 
@@ -414,20 +466,26 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 crates/ctxguard/
   Cargo.toml
   src/
-    lib.rs           # 库入口；类型定义、token 估算
+    lib.rs           # 库入口；类型定义、token 估算、各切片的公开 API
     chunk.rs         # 切片 A：分块启发式
     index.rs         # 切片 B：索引
     scan.rs          # 切片 C：扫描
-    cli/             # 切片 D：五个命令（注册表单源）
     guard.rs         # 切片 E：hook 决策
     mcp.rs           # 切片 F：MCP 服务
     proxy.rs         # 切片 F：代理
-    bin/ctxguard.rs  # 主程序（子命令分发）
-tests/              # Rust 单元测试 + 移植的 Bash 用例
-tools/parity.py     # 对拍护栏（§6.2）
+    cli/             # 切片 D：五个命令（注册表单源）
+  src/bin/
+    ctxguard-chunk.rs   # 薄 CLI：解析参数 → core::chunk → 输出 JSON
+    ctxguard-scan.rs    # 薄 CLI：解析参数 → core::scan  → 输出 JSON
+    ctxguard.rs         # 主 CLI：子命令分发 → 同一个库
+  tests/                # Rust 单元测试 + 移植的 Bash 用例
+tools/parity.py         # 对拍护栏（§6.2）
 ```
 
-Python 侧的目录结构在迁移完成前保持不变（12 个平铺模块 + `tests/`）。
+- **一个 crate，多个 bin**：Cargo 自动发现 `src/bin/*.rs`，每个都是薄适配器，
+  共享 `ctxguard` 库。`cargo install --path crates/ctxguard` 可全装或按 `--bin` 选装。
+- **薄 CLI 与主二进制调的是同一个库函数**——过渡期与终局不存在两份实现。
+- Python 侧的目录结构在迁移完成前保持不变（12 个平铺模块 + `tests/`）。
 
 ## 附录 B：现状与终局的对照
 
