@@ -15,9 +15,14 @@
   4. CLAUDE.md：追加“读取纪律”段（带标记，可重复更新）
   5. .gitignore：忽略 .ctxindex/
   6. 首次建索引
+
+解释器：装进目标项目的代码需要 Python 3.13+。安装器会自己探测一个达标解释器并写进
+hook 命令（见 find_python）；本文件自身保持老 Python 可运行，因为用户可能只有 python3.9，
+用它来跑安装器、装出用 3.13 跑的工具。
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -132,6 +137,58 @@ def add_gitignore(root):
             f.write(("" if cur.endswith("\n") or not cur else "\n") + "\n".join(add) + "\n")
 
 
+def read_min_python():
+    """从 pyproject.toml 的 requires-python 读出最低 Python 版本。
+
+    版本要求的唯一事实来源是 pyproject.toml（与 uv、ty、ruff 共用同一份声明）。
+    这里用正则而不是 tomllib：安装器可能跑在老 Python 上（用户只有 python3.9），
+    而 tomllib 是 3.11+ 才有的标准库。
+    """
+    try:
+        with open(os.path.join(HERE, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'^\s*requires-python\s*=\s*"([^"]+)"', f.read(), re.M)
+    except OSError:
+        m = None
+    v = re.search(r">=\s*(\d+)\.(\d+)", m.group(1)) if m else None
+    if not v:
+        sys.exit("错误：无法从 %s 的 requires-python 读出 Python 版本要求"
+                 "（pyproject.toml 必须与 install.py 同目录）。" % os.path.join(HERE, "pyproject.toml"))
+    return (int(v.group(1)), int(v.group(2)))
+
+
+def probe_python(cmd):
+    """运行候选解释器回报版本号；不可用返回 None。"""
+    try:
+        out = subprocess.run([cmd, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        return tuple(int(x) for x in out.stdout.strip().split("."))
+    except ValueError:
+        return None
+
+
+def find_python(min_py):
+    """找一个满足 min_py 的解释器，返回 (命令, 版本)；找不到返回 (None, None)。
+
+    安装器本身刻意保持老 Python 可运行（用户可能只有 python3.9），
+    因此这里做运行时探测，而不是在安装器里写死解释器路径。
+    """
+    cands = []
+    if sys.version_info >= min_py:
+        cands.append(sys.executable)          # 运行安装器的解释器，优先
+    names = ["python%d.%d" % min_py, "python3.14", "python3.15", "python3", "python"]
+    cands.extend(n + ".exe" if os.name == "nt" else n for n in names)
+    for c in cands:
+        v = probe_python(c)
+        if v and v >= min_py:
+            return c, v
+    return None, None
+
+
 def main():
     args = sys.argv[1:]
     user = "--user" in args
@@ -144,7 +201,12 @@ def main():
         backend = args[args.index("--backend") + 1]
     pos = [a for i, a in enumerate(args) if not a.startswith("--") and not (i and args[i - 1] in ("--wrap", "--backend"))]
     root = os.path.abspath(pos[0] if pos else os.getcwd())
-    py = "python3" if os.name != "nt" else "python"
+    min_py = read_min_python()
+    py, pyver = find_python(min_py)
+    if py is None and not uninstall:
+        sys.exit("错误：未找到 Python %d.%d+ 的解释器（要求见 pyproject.toml 的 requires-python）。"
+                 "请先安装（例如 brew install python@%d.%d，或用 python%d.%d 运行本安装器）后重试。"
+                 % (min_py[0], min_py[1], min_py[0], min_py[1], min_py[0], min_py[1]))
 
     if user:
         base = os.path.expanduser("~/.claude")
@@ -234,7 +296,7 @@ def main():
         print("用户级安装完成：hook 对所有项目生效；MCP 导航服务与 CLAUDE.md 规则需在各项目里运行一次不带 --user 的安装。")
 
     print(f"""
-安装完成（{'用户级' if user else root}）。请重启 Claude Code，然后：
+安装完成（{'用户级' if user else root}，解释器 {py} / Python {pyver[0]}.{pyver[1]}）。请重启 Claude Code，然后：
   /hooks   确认 PreToolUse(Read|Grep|Bash) 与 SessionStart 已加载
   /mcp     确认 ctxguard 已连接（首次会要求批准项目级 .mcp.json）
 可调参数写在项目根的 .ctxguard.json，例如：

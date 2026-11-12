@@ -3,7 +3,7 @@
 目标：**让任何一次工具调用都不可能把大块内容放进 Claude Code 的上下文**，而不是事后截断。
 做法是取消“读任意内容”的能力，只保留“按索引下钻”的能力：`目录 → 段 → 行`。
 
-只需要 Python 3.9+（标准库），不需要向量库、不需要联网、不需要解析器。
+需要 Python 3.13+（标准库），不需要向量库、不需要联网、不需要解析器。
 
 ## 安装
 
@@ -13,6 +13,15 @@ python3 install.py --user                      # 仅 hook，对所有项目生�
 python3 install.py --uninstall /path/to/project
 python3 install.py /path/to/project --wrap <mcp名>   # 给第三方 MCP 套上“大输出转存”代理
 ```
+
+**解释器要求**：装进目标项目的代码需要 Python 3.13+（下限写在 `pyproject.toml` 的
+`requires-python` 里，是唯一事实来源）。安装器会自己探测一个达标解释器（`python3.13`、
+`python3.14`、`python3.15`、PATH 上的 `python3`……）并把它的名字写进 hook 命令——
+不能假设目标机器的 `python3` 够新，很多 macOS 自带的仍是 3.9。找不到达标解释器时安装器
+直接报错退出，不会留下一个跑不起来的 hook。
+
+安装器自身刻意保持老 Python 可运行：你可以用 `python3.9 install.py ...` 装出一套用
+3.13 跑的工具。
 
 安装后重启 Claude Code，用 `/hooks` 和 `/mcp` 确认。安装器是幂等的，会合并而不是覆盖你已有的
 `.claude/settings.json`、`.mcp.json`、`CLAUDE.md`。
@@ -102,7 +111,7 @@ python3 tests/test_backends.py "$(pwd)"             # 54 项 + 装了 tree-sitte
 复制散装 `.py` 投放，不走打包。
 
 ```bash
-uv sync                          # 建 .venv（Python 3.12），装 ruff / ty / pytest
+uv sync                          # 建 .venv（Python 3.13），装 ruff / ty / pytest
 uv run ruff check .              # 静态检查：E,F,W,I,N,UP,B,SIM
 uv run ty check .                # 类型检查
 uv run pytest                    # 自动造样例仓库并跑完 137 项检查

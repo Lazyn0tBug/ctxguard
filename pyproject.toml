@@ -3,8 +3,10 @@ name = "ctxguard"
 version = "0.1.0"
 description = "索引优先的读取约束：让任何一次工具调用都不可能把大块内容放进上下文"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 # 运行时零依赖：只用标准库，保证“复制到目标项目即可用”的投放模型成立。
+# requires-python 同时是三处的事实来源：uv 的解析下限、ty 的语言级别判定、
+# 以及 install.py 写进目标项目 hook 命令的解释器下限。
 dependencies = []
 
 [dependency-groups]
@@ -25,7 +27,7 @@ treesitter = [
 package = false
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
