@@ -269,6 +269,26 @@ with cfg(["pyast"]):
     con.close()
 check("symbols 表使用后端的签名文本", any("decorated(a, b):" in x for x in syms) and not any("fake" in x for x in syms), syms)
 
+# ---- 文档标题分派：.rst / .adoc / .org / 其余按 Markdown
+def crumbs(ext, text):
+    """doc_pieces 切出的标题面包屑（不含 "(开头)" 段）。"""
+    pieces, _ = lib.doc_pieces(lib.split_lines(text), ext)
+    return [c for _, _, c in pieces]
+
+
+check("文档标题：RST 下划线式标题，含层级",
+      crumbs(".rst", "运维手册\n========\n\n正文。\n\n故障处理\n--------\n\n正文。\n")
+      == ["运维手册", "运维手册 > 故障处理"], crumbs(".rst", "运维手册\n========\n"))
+check("文档标题：AsciiDoc 的 = 与 ==",
+      crumbs(".adoc", "= 部署指南\n\n正文。\n\n== 环境准备\n\n正文。\n")
+      == ["部署指南", "部署指南 > 环境准备"], crumbs(".adoc", "= 部署指南\n"))
+check("文档标题：Org 的 * 与 **",
+      crumbs(".org", "* 会议纪要\n\n正文。\n\n** 讨论要点\n\n正文。\n")
+      == ["会议纪要", "会议纪要 > 讨论要点"], crumbs(".org", "* 会议纪要\n"))
+check("文档标题：其余扩展名按 Markdown 处理",
+      crumbs(".md", "# 标题\n\n正文。\n\n## 小节\n\n正文。\n") == ["标题", "标题 > 小节"],
+      crumbs(".md", "# 标题\n"))
+
 # ====================================================================== B. tree-sitter 遍历逻辑（假节点）
 class N:
     def __init__(self, type_, start, end, children=(), fields=None):

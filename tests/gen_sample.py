@@ -75,6 +75,43 @@ for ch in range(1, 7):
 w("docs/whitepaper.md", md)
 w("docs/plain.txt", "".join(f"第 {i} 行普通文本内容，没有任何标题结构。\n" * 1 for i in range(900)))
 
+# RST（下划线式标题）/ AsciiDoc（= 标题）/ Org（* 标题）：三种文档标题分派
+w("docs/manual.rst", """运维手册
+========
+
+本节说明日常运维的操作步骤。
+
+故障处理
+--------
+
+遇到异常时按下列顺序排查。
+
+回滚流程
+~~~~~~~~
+
+必要时回滚到上一个稳定版本。
+""")
+w("docs/guide.adoc", """= 部署指南
+
+本节描述部署步骤。
+
+== 环境准备
+
+准备运行环境。
+
+== 部署步骤
+
+执行部署。
+""")
+w("docs/notes.org", """* 会议纪要
+
+第一部分。
+
+** 讨论要点
+
+第二部分。
+""")
+
 # YAML 配置
 y = "".join(f"service_{i}:\n  image: app:{i}\n  replicas: 3\n  env:\n" + "".join(f"    K{k}: v{k}\n" for k in range(10)) for i in range(40))
 w("ops/stack.yaml", y)

@@ -44,7 +44,7 @@ SessionStart 注入目录概览、主线程**累计读取预算**（防止“分
 再按缩进层级递归细分，直到每段不超过约 120 行 / 6000 字符。识别不出结构的文件（日志、纯文本）按空行切窗口。
 压缩成一行的 JSON/JS（超长行）会生成格式化后的可读视图，再对视图建目录。
 
-已验证的样例：Python、JS、C、Go、Rust、Java、SQL、Shell、YAML、中文 Markdown、压缩 JSON、纯文本；
+已验证的样例：Python、JS、C、Go、Rust、Java、SQL、Shell、YAML、中文 Markdown、RST、AsciiDoc、Org、压缩 JSON、纯文本；
 以及真实的 npm 源码树（JS + Markdown + HTML + man）。
 
 ## 可调参数（项目根 `.ctxguard.json`，均可省略）
