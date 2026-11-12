@@ -6,7 +6,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
+from dataclasses import dataclass, field
+from typing import Any, TypeIs
 
 import lib
 from lib import (
@@ -22,12 +25,12 @@ from lib import (
 )
 
 
-def like_escape(s):
+def like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 # ---------------------------------------------------------------- 根目录 / 配置
-def find_root(start=None):
+def find_root(start: str | None = None) -> str:
     r = os.environ.get("CTXGUARD_ROOT")
     if r:
         return os.path.abspath(r)
@@ -41,40 +44,114 @@ def find_root(start=None):
     return start
 
 
-def _read_json(p):
+@dataclass(slots=True)
+class Config:
+    """生效中的配置。每一项都经过校验：写坏的项退回默认并警告。
+
+    不用 pydantic：ctxguard 靠 install.py 复制散装 .py 投放、hook 用系统 python3 直接跑，
+    任何必需的第三方依赖都会让没装包的用户机器直接失效——而 hook 是 fail-open，
+    失效等于静默放行，读约束整个消失。
+    """
+
+    max_read_tok: int = 4000              # 单次读取上限（估算 tokens），超过即拒绝
+    session_budget: int = 100000          # 主线程累计读取预算，0=关闭
+    allow: list[str] = field(default_factory=list)   # 允许整份读取的路径 glob（相对项目根）
+    grep_content_max: int = 60            # 内置 Grep content 模式允许的 head_limit 上限
+    bash_guard: bool = True
+    backends: list[str] = field(default_factory=list)  # 声明提取后端；空=只用启发式
+    backend_options: dict[str, Any] = field(default_factory=dict)  # descend_functions、max_depth
+
+
+CONFIG_WARNINGS: list[str] = []          # 配置校验产生的警告（SessionStart 会回显）
+
+
+def _is_dict(v: object) -> TypeIs[dict[str, Any]]:
+    """窄化：JSON 顶层不是对象就当空配置。"""
+    return isinstance(v, dict)
+
+
+def _warn(name: str, value: object, expect: str) -> None:
+    """配置项非法：退回默认值并警告。配置写错不该让 hook 静默失效。"""
+    msg = "[ctxguard] 配置项 %s 期望%s，实际 %r —— 已退回默认值" % (name, expect, value)
+    sys.stderr.write(msg + "\n")
+    CONFIG_WARNINGS.append(msg)
+
+
+def _as_int(value: object, default: int, name: str) -> int:
+    """取整数配置项；类型不对或转不了就退回默认并警告。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        _warn(name, value, "整数")
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        _warn(name, value, "整数")
+        return default
+
+
+def _as_bool(value: object, default: bool, name: str) -> bool:
+    """取布尔配置项。只认真正的布尔与常见字符串写法——bool("false") 是 True，不能直接转。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in ("true", "false", "on", "off", "1", "0", "yes", "no"):
+        return value.lower() in ("true", "on", "1", "yes")
+    _warn(name, value, "布尔值")
+    return default
+
+
+def _as_str_list(value: object, default: list[str], name: str) -> list[str]:
+    """取字符串数组配置项；单个字符串按逗号切分（方便手写 .ctxguard.json）。"""
+    if isinstance(value, str):
+        return [x.strip() for x in value.split(",") if x.strip()]
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        return list(value)
+    _warn(name, value, "字符串数组")
+    return default
+
+
+def _read_json(p: str) -> dict[str, Any]:
     try:
         with open(p, encoding="utf-8") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) else {}
+        return d if _is_dict(d) else {}
     except Exception:
         return {}
 
 
-def load_config(root):
-    """配置优先级：环境变量 > 项目 .ctxguard.json > 用户 ~/.ctxguard.json > 默认。
-    安全：项目文件里的 backends 只允许内置后端名；任意模块/plugin: 只接受用户级配置或环境变量。"""
+def load_config(root: str) -> Config:
+    """读配置并逐项校验。
+
+    优先级：环境变量 > 项目 .ctxguard.json > 用户 ~/.ctxguard.json > 默认。
+    安全：项目文件里的 backends 只允许内置后端名；任意模块/plugin: 只接受用户级配置或环境变量。
+    写坏的项退回默认并警告——不让一个手误的配置把 hook 变成“什么都不拦”。
+    """
     import backends
-    cfg = {
-        "max_read_tok": lib.MAX_READ_TOK,   # 单次读取上限（估算 tokens），超过即拒绝
-        "session_budget": int(os.environ.get("CTXGUARD_SESSION_BUDGET", "100000")),  # 主线程累计读取预算，0=关闭
-        "allow": [],                        # 允许整份读取的路径 glob（相对项目根）
-        "grep_content_max": 60,             # 内置 Grep content 模式允许的 head_limit 上限
-        "bash_guard": os.environ.get("CTXGUARD_BASH", "on") != "off",
-        "backends": [],                     # 声明提取后端，如 ["treesitter", "pyast"] 或 "auto"；空=只用启发式
-        "backend_options": {},              # descend_functions(bool)、max_depth(int)
-    }
     user = _read_json(os.path.expanduser("~/.ctxguard.json"))
     proj = _read_json(os.path.join(root, ".ctxguard.json"))
-    # 用 update 而不是 |=：|= 会把值类型并集化（并进 JSON 里的 list/dict），
-    # update 保持 cfg 自身的推断类型，ty 才不会被 cfg["max_read_tok"] 的类型搅浑。
-    cfg.update({k: v for k, v in user.items() if k != "backends"})
-    cfg.update({k: v for k, v in proj.items() if k != "backends"})
-    opts = {}
-    for src in (user, proj):
+    cfg = Config(
+        max_read_tok=lib.MAX_READ_TOK,                                  # 已含 CTXGUARD_MAX_READ_TOK
+        session_budget=int(os.environ.get("CTXGUARD_SESSION_BUDGET", "100000")),
+        bash_guard=os.environ.get("CTXGUARD_BASH", "on") != "off",
+    )
+    for src, tag in ((user, "用户"), (proj, "项目")):
+        if "max_read_tok" in src:
+            cfg.max_read_tok = _as_int(src["max_read_tok"], cfg.max_read_tok, tag + " max_read_tok")
+        if "session_budget" in src:
+            cfg.session_budget = _as_int(src["session_budget"], cfg.session_budget, tag + " session_budget")
+        if "grep_content_max" in src:
+            cfg.grep_content_max = _as_int(src["grep_content_max"], cfg.grep_content_max, tag + " grep_content_max")
+        if "bash_guard" in src:
+            cfg.bash_guard = _as_bool(src["bash_guard"], cfg.bash_guard, tag + " bash_guard")
+        if "allow" in src:
+            cfg.allow = _as_str_list(src["allow"], cfg.allow, tag + " allow")
         bo = src.get("backend_options")
-        if isinstance(bo, dict):
-            opts.update(bo)
-    cfg["backend_options"] = opts
+        if _is_dict(bo):
+            if "descend_functions" in bo:
+                cfg.backend_options["descend_functions"] = _as_bool(
+                    bo["descend_functions"], False, tag + " backend_options.descend_functions")
+            if "max_depth" in bo:
+                cfg.backend_options["max_depth"] = _as_int(
+                    bo["max_depth"], 6, tag + " backend_options.max_depth")
 
     ignored = []
     env = os.environ.get("CTXGUARD_BACKENDS")
@@ -89,19 +166,19 @@ def load_config(root):
                 ignored.append(n)
     else:
         names = backends.expand(user.get("backends"))
-    cfg["backends"] = names
+    cfg.backends = names
 
-    lib.MAX_READ_TOK = int(cfg["max_read_tok"])
+    lib.MAX_READ_TOK = cfg.max_read_tok
     lib.BACKENDS = names
     lib.BACKEND_IGNORED = ignored
-    lib.BACKEND_OPTS = {"descend_functions": bool(opts.get("descend_functions", False)),
-                        "max_depth": int(opts.get("max_depth", 6))}
+    lib.BACKEND_OPTS = {"descend_functions": bool(cfg.backend_options.get("descend_functions", False)),
+                        "max_depth": int(cfg.backend_options.get("max_depth", 6))}
     backends.LOG_PATH = os.path.join(root, lib.INDEX_DIR, "backend.log")
     lib.CONFIG_LOADED = True
     return cfg
 
 
-def resolve(root, path):
+def resolve(root: str, path: str | None) -> tuple[str, str]:
     path = path or "."
     ab = os.path.normpath(path if os.path.isabs(path) else os.path.join(root, path))
     try:
@@ -113,7 +190,7 @@ def resolve(root, path):
     return ab, rel
 
 
-def file_tokens(path):
+def file_tokens(path: str) -> int:
     try:
         size = os.path.getsize(path)
     except OSError:
@@ -127,18 +204,18 @@ def file_tokens(path):
     return est_tokens(data.decode("utf-8", "replace"))
 
 
-def lines_tokens(lines):
+def lines_tokens(lines: list[str]) -> int:
     return est_tokens("\n".join(ln[:LINE_CLIP] for ln in lines))
 
 
-def refresh(root, limit=15):
+def refresh(root: str, limit: int = 15) -> dict[str, int | bool]:
     return build(root, time_limit=limit)
 
 
 LONG_LINE = 3000
 
 
-def longline_view(root, ab):
+def longline_view(root: str, ab: str) -> str | None:
     """文件含超长行（压缩 JSON/JS 等）时按行无法导航：生成一份可按行读取的视图，返回其绝对路径；否则返回 None。"""
     try:
         if os.path.getsize(ab) > lib.MAX_INDEX_BYTES or os.path.splitext(ab)[1].lower() in BIN_EXTS:
@@ -175,7 +252,7 @@ def longline_view(root, ab):
     return vp
 
 
-def big_message(root, ab, what):
+def big_message(root: str, ab: str, what: str) -> str:
     """拒绝整份读取时给模型的反馈：目录 + 下一步；含超长行的文件改指向可读视图。"""
     v = longline_view(root, ab)
     if v:
@@ -188,7 +265,7 @@ def big_message(root, ab, what):
 
 
 # ---------------------------------------------------------------- tree
-def t_tree(root, path=".", depth=2, maxrows=100):
+def t_tree(root: str, path: str = ".", depth: int = 2, maxrows: int = 100) -> str:
     ab, rel = resolve(root, path)
     if os.path.isfile(ab):
         return t_outline(root, path)
@@ -235,7 +312,7 @@ def t_tree(root, path=".", depth=2, maxrows=100):
 
 
 # ---------------------------------------------------------------- outline
-def t_outline(root, path):
+def t_outline(root: str, path: str) -> str:
     ab, rel = resolve(root, path)
     if os.path.isdir(ab):
         return t_tree(root, path)
@@ -263,7 +340,7 @@ def t_outline(root, path):
 
 
 # ---------------------------------------------------------------- read
-def t_read(root, path, start=None, end=None):
+def t_read(root: str, path: str, start: int | None = None, end: int | None = None) -> str:
     ab, rel = resolve(root, path)
     if not os.path.isfile(ab):
         return f"ERROR: 文件不存在：{path}"
@@ -319,7 +396,8 @@ def _hit_chunks(root, full, hl, top=4):
     return "; ".join(f"{rows[k].s}-{rows[k].e} {rows[k].title[:50]}({n})" for k, n in items)
 
 
-def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):
+def t_search(root: str, pattern: str, path: str = ".", mode: str = "auto", limit: int = 40,
+             glob: str | None = None) -> str:
     if not pattern:
         return "ERROR: pattern 为空"
     ab, rel = resolve(root, path)
@@ -391,7 +469,7 @@ def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):
 
 
 # ---------------------------------------------------------------- symbols
-def t_symbols(root, query="", path=None, limit=50):
+def t_symbols(root: str, query: str = "", path: str | None = None, limit: int = 50) -> str:
     refresh(root)
     limit = max(1, min(int(limit or 50), 200))
     con = open_db(root)
@@ -420,6 +498,6 @@ def t_symbols(root, query="", path=None, limit=50):
 
 
 # ---------------------------------------------------------------- overview（SessionStart 注入）
-def overview(root, maxrows=25):
+def overview(root: str, maxrows: int = 25) -> str:
     out = t_tree(root, ".", depth=1, maxrows=maxrows).split("\n")
     return "\n".join(out[:-1])

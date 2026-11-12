@@ -45,9 +45,10 @@ def doctor(root, cfg):
             p("[%s] 加载失败: %s" % (name, backends.last_errors().get(name, "?")))
             continue
         extra = ""
-        if hasattr(mod, "signature_extra"):
+        signature_extra = getattr(mod, "signature_extra", None)
+        if signature_extra is not None:
             try:
-                extra = " (%s)" % mod.signature_extra()
+                extra = " (%s)" % signature_extra()
             except Exception as ex:  # noqa: BLE001
                 extra = " (signature_extra 出错: %s)" % ex
         p("[%s] 已加载 v%s%s" % (name, getattr(mod, "VERSION", "?"), extra))

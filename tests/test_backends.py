@@ -114,14 +114,14 @@ except Exception:
         pass
 ''' + "\n".join("    pad%d = %d" % (i, i) for i in range(0)) + "\n"
 
-d = backend_pyast.declarations(SAMPLE, ".py", {"descend_functions": False, "max_depth": 6})
+d = backend_pyast.declarations(SAMPLE, ".py", {"descend_functions": False, "max_depth": 6}) or []
 texts = [x[2] for x in d]
 check("pyast: 不再把 docstring/字符串里的 def/class 当声明",
       not any("fake" in t or "NotAClass" in t for t in texts), texts)
 check("pyast: 真声明齐全",
       all(any(n in t for t in texts) for n in ["real_func", "decorated", "inner_closure"][:2] + ["Service", "method_a", "Nested", "deep", "conditional", "in_try", "in_except"]), texts)
 check("pyast: 默认不把闭包当声明", not any("inner_closure" in t for t in texts))
-d2 = backend_pyast.declarations(SAMPLE, ".py", {"descend_functions": True, "max_depth": 6})
+d2 = backend_pyast.declarations(SAMPLE, ".py", {"descend_functions": True, "max_depth": 6}) or []
 check("pyast: descend_functions=True 时闭包出现且层级为 1",
       any("inner_closure" in x[2] and x[1] == 1 for x in d2), d2)
 lines = SAMPLE.split("\n")
@@ -471,11 +471,11 @@ else:
         check("真实 tree-sitter：%s 自检" % lang, got is not None and not miss and not extra and not lv_bad,
               {"缺失": miss, "不应出现": extra, "层级": lv_bad, "实际": texts})
     if real_ok.get("python"):
-        a = backend_pyast.declarations(SAMPLE, ".py", opts)
-        b = backend_ts.declarations(SAMPLE, ".py", opts)
+        a = backend_pyast.declarations(SAMPLE, ".py", opts) or []
+        b = backend_ts.declarations(SAMPLE, ".py", opts) or []
         check("真实 tree-sitter(python) 与 pyast 的声明起点/层级/终点一致",
-              b is not None and [(x[0], x[1], x[3]) for x in a] == [(x[0], x[1], x[3]) for x in b],
-              {"pyast": [(x[0], x[1], x[3]) for x in a], "ts": [(x[0], x[1], x[3]) for x in (b or [])]})
+              bool(b) and [(x[0], x[1], x[3]) for x in a] == [(x[0], x[1], x[3]) for x in b],
+              {"pyast": [(x[0], x[1], x[3]) for x in a], "ts": [(x[0], x[1], x[3]) for x in b]})
 
 # ====================================================================== D. 命令行
 env = dict(os.environ, CTXGUARD_ROOT=repo, CTXGUARD_BACKENDS="pyast")

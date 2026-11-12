@@ -47,7 +47,7 @@ def _save(root, sid, st):
 
 def charge(root, d, cfg, tok):
     """主线程累计读取预算；子 agent（带 agent_id）不计入，那里正是“读很多”的指定场所。"""
-    budget = int(cfg.get("session_budget") or 0)
+    budget = cfg.session_budget
     if budget <= 0 or d.get("agent_id"):
         return
     sid = d.get("session_id") or "default"
@@ -67,7 +67,7 @@ def handle_read(root, d, cfg):
     if not fp or not os.path.isfile(fp):
         return
     ab, rel = tools.resolve(root, fp)
-    if any(fnmatch.fnmatch(rel, g) for g in cfg.get("allow", [])):
+    if any(fnmatch.fnmatch(rel, g) for g in cfg.allow):
         return
     ext = os.path.splitext(fp)[1].lower()
     size = os.path.getsize(fp)
@@ -102,7 +102,7 @@ def handle_grep(root, d, cfg):
     ti = d.get("tool_input") or {}
     if (ti.get("output_mode") or "files_with_matches") != "content":
         return
-    cap = int(cfg.get("grep_content_max", 60))
+    cap = cfg.grep_content_max
     hl = ti.get("head_limit")
     if hl is None or int(hl) == 0 or int(hl) > cap:
         deny(f"[ctxguard] 拒绝：Grep 的 content 模式必须设置 head_limit ≤ {cap}。"
@@ -326,7 +326,7 @@ def analyze_bash(cmd, cwd, root):
 
 
 def handle_bash(root, d, cfg):
-    if not cfg.get("bash_guard", True):
+    if not cfg.bash_guard:
         return
     cmd = (d.get("tool_input") or {}).get("command") or ""
     msg = analyze_bash(cmd, d.get("cwd") or root, root)

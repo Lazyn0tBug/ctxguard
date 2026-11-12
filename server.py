@@ -15,7 +15,7 @@ import tools  # noqa: E402
 
 ROOT = tools.find_root()
 CFG = tools.load_config(ROOT)
-BUDGET = int(CFG.get("session_budget") or 0)
+BUDGET = CFG.session_budget
 served = 0
 
 TOOLS = [

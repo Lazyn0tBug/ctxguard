@@ -22,18 +22,52 @@ import importlib.util
 import json
 import os
 import time
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+# 后端声明：(起始行0基, 层级, 签名文本, 结束行0基或None)
+BackendDecl = tuple[int, int, str, int | None]
+
+
+class Backend(Protocol):
+    """声明提取后端的约定。
+
+    成员写成只读属性，才能让模块（而不是实例）满足这个协议——ty 会据此检查
+    内置后端与插件的调用点是否用对了参数。
+    """
+
+    @property
+    def NAME(self) -> str: ...   # noqa: N802  协议成员是大写常量名
+
+    @property
+    def VERSION(self) -> str: ...   # noqa: N802
+
+    def supports(self, ext: str) -> bool:
+        """ext 形如 ".py"（小写）。"""
+
+    def declarations(self, text: str, ext: str, opts: dict[str, Any]) -> list[BackendDecl] | None:
+        """返回 [(起始行0基, 层级, 签名文本, 结束行0基或None), ...]；返回 None 表示处理不了。"""
+
+
+if TYPE_CHECKING:      # 只在类型检查时导入：ty 会核对内置后端是否满足 Backend 协议
+    import backend_pyast
+    import backend_ts
+
+    _pyast_conforms: Backend = backend_pyast
+    _ts_conforms: Backend = backend_ts
+
 
 BUILTIN = {"pyast": "backend_pyast", "treesitter": "backend_ts"}
 AUTO = ["treesitter", "pyast"]
 LOG_PATH: str | None = None   # 由 tools.load_config 设置
 MIN_EMPTY_FALLBACK_LINES = 60   # 后端返回空列表且文件不小于此行数时，视为“没认出来”，回退启发式
 
-_cache = {}
+_cache: dict[str, Backend | None] = {}
 _errors = {}
 _logged = set()
 
 
-def expand(spec):
+def expand(spec: str | list[str] | None) -> list[str]:
     """把配置值规整成有序名字列表。支持 "auto"、"a,b"、["a","b"]、"off"/空。"""
     if spec is None:
         return []
@@ -58,7 +92,7 @@ def expand(spec):
     return res
 
 
-def is_builtin(name):
+def is_builtin(name: str) -> bool:
     return name in BUILTIN
 
 
@@ -83,26 +117,28 @@ def last_errors():
     return dict(_errors)
 
 
-def load(name):
+def load(name: str) -> Backend | None:
     """加载后端模块；失败返回 None，并把原因记在 last_errors()。"""
     if name in _cache:
         return _cache[name]
-    mod = None
+    mod: Backend | None = None
     try:
+        module: ModuleType | None = None
         if name in BUILTIN:
-            mod = importlib.import_module(BUILTIN[name])
+            module = importlib.import_module(BUILTIN[name])
         elif name.startswith("plugin:"):
             path = os.path.abspath(os.path.expanduser(name.removeprefix("plugin:")))
             spec = importlib.util.spec_from_file_location("ctxguard_plugin_%x" % (hash(path) & 0xFFFFFF), path)
             if spec is None or spec.loader is None:
                 raise ImportError("无法为插件创建模块规格：%s" % path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
         else:
-            mod = importlib.import_module(name)
+            module = importlib.import_module(name)
         for attr in ("NAME", "VERSION", "supports", "declarations"):
-            if not hasattr(mod, attr):
+            if not hasattr(module, attr):
                 raise AttributeError("后端缺少必需成员 %s" % attr)
+        mod = cast("Backend", module)
     except Exception as ex:  # noqa: BLE001
         _errors[name] = "%s: %s" % (type(ex).__name__, ex)
         _log("load", name, _errors[name])

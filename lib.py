@@ -15,7 +15,21 @@ import sqlite3
 import subprocess
 import sys
 import time
+from enum import StrEnum
 from typing import NamedTuple
+
+
+class Kind(StrEnum):
+    """文件类别。存进索引库的就是这些字符串值。"""
+
+    CODE = "code"
+    DOC = "doc"
+    BINARY = "binary"
+    HUGE = "huge"
+
+
+# 启发式声明：(起始行0基, 层级, 签名文本)
+Decl = tuple[int, int, str]
 
 
 class Chunk(NamedTuple):
@@ -108,7 +122,7 @@ def set_stdin_encoding():
 
 
 # ---------------------------------------------------------------- 估算
-def est_tokens(text):
+def est_tokens(text: str) -> int:
     """粗估 token：ASCII 约 3.6 字符/token，非 ASCII（中日韩）约 1 字符/token。"""
     if not text:
         return 0
@@ -116,12 +130,12 @@ def est_tokens(text):
     return int((len(text) - na) / 3.6 + na * 1.0) + 1
 
 
-def _clip(s, n):
+def _clip(s: str, n: int) -> str:
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def indent_of(line):
+def indent_of(line: str) -> int:
     n = 0
     for ch in line:
         if ch == " ":
@@ -133,14 +147,14 @@ def indent_of(line):
     return n
 
 
-def split_lines(text):
+def split_lines(text: str) -> list[str]:
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
     return [ln[:-1] if ln.endswith("\r") else ln for ln in lines]
 
 
-def read_lines(path):
+def read_lines(path: str) -> list[str]:
     with open(path, "rb") as f:
         data = f.read(MAX_INDEX_BYTES)
     return split_lines(data.decode("utf-8", "replace"))
@@ -182,7 +196,7 @@ LEAD = re.compile(
 _COMMENT_MARK = re.compile(r"^(?:///?!?|/\*+|\*+/?|#+(?=\s|$)|--|;;+|\"\"\"|'''|\(\*)\s*")
 
 
-def find_decls(lines, ext):
+def find_decls(lines: list[str], ext: str) -> list[Decl]:
     """返回 [(行号0基, 缩进, 声明文本)]。"""
     if ext in NO_DECL_EXTS:
         return []
@@ -417,7 +431,7 @@ def doc_pieces(lines, ext):
     return pieces, syms
 
 
-def chunk_text(text, ext):
+def chunk_text(text: str, ext: str) -> tuple[list[str], list[Chunk], list[tuple[int, str]]]:
     """返回 (lines, chunks, symbols)。chunks 是 [Chunk]，行号 1 基、闭区间。"""
     lines = split_lines(text)
     if not lines:
@@ -452,7 +466,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 """
 
 
-def open_db(root):
+def open_db(root: str) -> sqlite3.Connection:
     d = os.path.join(root, INDEX_DIR)
     os.makedirs(d, exist_ok=True)
     gi = os.path.join(d, ".gitignore")
@@ -477,13 +491,13 @@ def open_db(root):
     return con
 
 
-def index_signature():
+def index_signature() -> str:
     import backends
     return "v%s|%d|%d|%s" % (INDEX_VERSION, MAX_CHUNK_LINES, MAX_CHUNK_CHARS,
                              backends.signature(BACKENDS, BACKEND_OPTS))
 
 
-def list_files(root):
+def list_files(root: str) -> list[str]:
     paths = None
     try:
         r = subprocess.run(["git", "-C", root, "ls-files", "-co", "--exclude-standard", "-z"],
@@ -508,7 +522,7 @@ def list_files(root):
     return out
 
 
-def index_one(con, root, rel):
+def index_one(con: sqlite3.Connection, root: str, rel: str) -> bool | None:
     p = os.path.join(root, rel)
     try:
         st = os.stat(p)
@@ -517,16 +531,16 @@ def index_one(con, root, rel):
             con.execute(f"DELETE FROM {t} WHERE path=?", (rel,))
         return None
     ext = os.path.splitext(rel)[1].lower()
-    kind, nlines, tok, chunks, syms = ("doc" if ext in DOC_EXTS else "code"), 0, 0, [], []
+    kind, nlines, tok, chunks, syms = (Kind.DOC if ext in DOC_EXTS else Kind.CODE), 0, 0, [], []
     if ext in BIN_EXTS:
-        kind = "binary"
+        kind = Kind.BINARY
     elif st.st_size > MAX_INDEX_BYTES:
-        kind, tok = "huge", int(st.st_size / 3.5)
+        kind, tok = Kind.HUGE, int(st.st_size / 3.5)
     else:
         with open(p, "rb") as f:
             data = f.read()
         if b"\0" in data[:8192]:
-            kind = "binary"
+            kind = Kind.BINARY
         else:
             text = data.decode("utf-8", "replace")
             lines, chunks, syms = chunk_text(text, ext)
@@ -541,7 +555,8 @@ def index_one(con, root, rel):
     return True
 
 
-def build(root, con=None, time_limit=None, force=False):
+def build(root: str, con: sqlite3.Connection | None = None, time_limit: float | None = None,
+          force: bool = False) -> dict[str, int | bool]:
     own = con is None
     con = con or open_db(root)
     t0 = time.monotonic()
@@ -575,7 +590,7 @@ def build(root, con=None, time_limit=None, force=False):
     return {"total": len(paths), "done": done, "changed": changed, "partial": done < len(paths)}
 
 
-def ensure_file(con, root, rel):
+def ensure_file(con: sqlite3.Connection, root: str, rel: str) -> FileRow | None:
     """保证单个文件的索引是新的，返回 files 行 (path,size,mtime,kind,lines,tok,nchunks) 或 None。"""
     try:
         st = os.stat(os.path.join(root, rel))
@@ -590,7 +605,7 @@ def ensure_file(con, root, rel):
     return row
 
 
-def chunks_for(root, abspath):
+def chunks_for(root: str, abspath: str) -> list[Chunk]:
     """返回 [Chunk]；优先用索引，失败则现算（文件在项目外也能用）。"""
     try:
         rel = os.path.relpath(abspath, root).replace(os.sep, "/")
@@ -615,7 +630,7 @@ def chunks_for(root, abspath):
         return []
 
 
-def outline_text(rows, maxrows=60):
+def outline_text(rows: list[Chunk], maxrows: int = 60) -> str:
     out = []
     for c in rows[:maxrows]:
         t = c.title if len(c.title) <= 90 else c.title[:89] + "…"
@@ -627,7 +642,7 @@ def outline_text(rows, maxrows=60):
     return "\n".join(out)
 
 
-def big_file_message(root, path, what):
+def big_file_message(root: str, path: str, what: str) -> str:
     """给被拒绝的大文件生成“目录 + 下一步怎么做”的反馈。"""
     rel = os.path.relpath(path, root) if path.startswith(root) else path
     rows = chunks_for(root, path)

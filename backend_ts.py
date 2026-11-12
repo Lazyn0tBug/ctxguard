@@ -14,6 +14,9 @@
     pip install tree-sitter tree-sitter-python tree-sitter-javascript ...   # 各语言单包
 """
 import importlib
+from typing import Any
+
+from backends import BackendDecl
 
 NAME = "treesitter"
 VERSION = "1"        # 修改 SPECS / 遍历逻辑时递增，旧索引会自动重建
@@ -101,7 +104,7 @@ def signature_extra():
     return pkg_version(*PACKAGES)
 
 
-def supports(ext):
+def supports(ext: str) -> bool:
     return ext in EXT_LANG
 
 
@@ -282,7 +285,7 @@ def collect(root, spec, lines, opts):
     return out
 
 
-def declarations(text, ext, opts):
+def declarations(text: str, ext: str, opts: dict[str, Any]) -> list[BackendDecl] | None:
     lang = EXT_LANG.get(ext)
     spec = SPECS.get(lang) if lang else None
     if spec is None:

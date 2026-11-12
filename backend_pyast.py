@@ -2,6 +2,9 @@
 """ctxguard 后端：Python 标准库 ast。零依赖，精确，可在任何机器上测试，也是 tree-sitter 后端的对照基准。"""
 import ast
 import sys
+from typing import Any
+
+from backends import BackendDecl
 
 NAME = "pyast"
 VERSION = "1"
@@ -16,7 +19,7 @@ def signature_extra():
     return "py%d.%d" % sys.version_info[:2]
 
 
-def supports(ext):
+def supports(ext: str) -> bool:
     return ext in (".py", ".pyi", ".pyw")
 
 
@@ -28,7 +31,7 @@ def _sig(lines, node):
     return " ".join(" ".join(x.split()) for x in seg)[:120]
 
 
-def declarations(text, ext, opts):
+def declarations(text: str, ext: str, opts: dict[str, Any]) -> list[BackendDecl] | None:
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
