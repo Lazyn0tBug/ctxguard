@@ -16,9 +16,10 @@
   5. .gitignore：忽略 .ctxindex/
   6. 首次建索引
 
-解释器：装进目标项目的代码需要 Python 3.13+。安装器会自己探测一个达标解释器并写进
-hook 命令（见 find_python）；本文件自身保持老 Python 可运行，因为用户可能只有 python3.9，
-用它来跑安装器、装出用 3.13 跑的工具。
+解释器：装进目标项目的代码需要 Python 3.13+（下限见 pyproject.toml 的 requires-python）。
+安装器挑一个 PATH 上够新的解释器并把命令名写进 hook 命令——只写命令名不写绝对路径：
+绝对路径在换机、删 venv 后会失效，而 hook 失效是静默的（fail-open），比装不上更糟。
+能不能跑，靠检测版本决定，不靠猜。
 """
 import json
 import os
@@ -26,6 +27,12 @@ import re
 import shutil
 import subprocess
 import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:      # tomllib 是 3.11+ 的标准库
+    sys.exit("错误：安装器需要 Python 3.11+（缺 tomllib）。当前 %s；请用 python3.13 运行本安装器。"
+             % "%d.%d.%d" % sys.version_info[:3])
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILES = ["lib.py", "tools.py", "index.py", "server.py", "hook_pre.py", "hook_session.py", "proxy.py",
@@ -140,24 +147,22 @@ def add_gitignore(root):
 def read_min_python():
     """从 pyproject.toml 的 requires-python 读出最低 Python 版本。
 
-    版本要求的唯一事实来源是 pyproject.toml（与 uv、ty、ruff 共用同一份声明）。
-    这里用正则而不是 tomllib：安装器可能跑在老 Python 上（用户只有 python3.9），
-    而 tomllib 是 3.11+ 才有的标准库。
+    版本要求的唯一事实来源是 pyproject.toml（uv、ty、ruff、install.py 共用同一份声明）。
     """
+    path = os.path.join(HERE, "pyproject.toml")
     try:
-        with open(os.path.join(HERE, "pyproject.toml"), encoding="utf-8") as f:
-            m = re.search(r'^\s*requires-python\s*=\s*"([^"]+)"', f.read(), re.M)
-    except OSError:
-        m = None
-    v = re.search(r">=\s*(\d+)\.(\d+)", m.group(1)) if m else None
-    if not v:
-        sys.exit("错误：无法从 %s 的 requires-python 读出 Python 版本要求"
-                 "（pyproject.toml 必须与 install.py 同目录）。" % os.path.join(HERE, "pyproject.toml"))
-    return (int(v.group(1)), int(v.group(2)))
+        with open(path, "rb") as f:
+            spec = tomllib.load(f).get("project", {}).get("requires-python", "")
+    except (OSError, tomllib.TOMLDecodeError) as ex:
+        sys.exit("错误：无法读取 %s（%s: %s）" % (path, type(ex).__name__, ex))
+    m = re.search(r">=\s*(\d+)\.(\d+)", spec)
+    if not m:
+        sys.exit("错误：pyproject.toml 的 requires-python=%r 里读不出最低版本" % spec)
+    return (int(m.group(1)), int(m.group(2)))
 
 
-def probe_python(cmd):
-    """运行候选解释器回报版本号；不可用返回 None。"""
+def probe_version(cmd):
+    """问解释器自己的版本（按 PATH 解析该命令名），返回 (major, minor)；不可用返回 None。"""
     try:
         out = subprocess.run([cmd, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
                              capture_output=True, text=True, timeout=15)
@@ -172,21 +177,27 @@ def probe_python(cmd):
 
 
 def find_python(min_py):
-    """找一个满足 min_py 的解释器，返回 (命令, 版本)；找不到返回 (None, None)。
+    """挑一个够新的解释器命令名（按 PATH 解析），返回 (名字, 版本)。
 
-    安装器本身刻意保持老 Python 可运行（用户可能只有 python3.9），
-    因此这里做运行时探测，而不是在安装器里写死解释器路径。
+    只用 PATH 上的命令名，不写绝对路径：绝对路径在换机、删 venv、卸载 Homebrew
+    之后会失效，而 hook 失效是静默的（fail-open，读约束直接消失），比装不上更糟。
+    能不能跑，靠检测版本决定，不靠猜。
     """
-    cands = []
-    if sys.version_info >= min_py:
-        cands.append(sys.executable)          # 运行安装器的解释器，优先
-    names = ["python%d.%d" % min_py, "python3.14", "python3.15", "python3", "python"]
-    cands.extend(n + ".exe" if os.name == "nt" else n for n in names)
-    for c in cands:
-        v = probe_python(c)
-        if v and v >= min_py:
-            return c, v
-    return None, None
+    tried = []
+    names = ["python3", "python3.13", "python3.14", "python3.15", "python"]
+    if os.name == "nt":
+        names = [n + ".exe" for n in names] + ["py"]
+    for name in names:
+        v = probe_version(name)
+        if v is None:
+            tried.append("%s(不可用)" % name)
+        elif v < min_py:
+            tried.append("%s(%d.%d 太旧)" % (name, v[0], v[1]))
+        else:
+            return name, v
+    sys.exit("错误：PATH 上没有 Python %d.%d+ 的解释器。已试：%s。"
+             "请先安装（例如 brew install python@%d.%d，并确保 python3 指向它）后重试。"
+             % (min_py[0], min_py[1], "、".join(tried), min_py[0], min_py[1]))
 
 
 def main():
@@ -202,11 +213,6 @@ def main():
     pos = [a for i, a in enumerate(args) if not a.startswith("--") and not (i and args[i - 1] in ("--wrap", "--backend"))]
     root = os.path.abspath(pos[0] if pos else os.getcwd())
     min_py = read_min_python()
-    py, pyver = find_python(min_py)
-    if py is None and not uninstall:
-        sys.exit("错误：未找到 Python %d.%d+ 的解释器（要求见 pyproject.toml 的 requires-python）。"
-                 "请先安装（例如 brew install python@%d.%d，或用 python%d.%d 运行本安装器）后重试。"
-                 % (min_py[0], min_py[1], min_py[0], min_py[1], min_py[0], min_py[1]))
 
     if user:
         base = os.path.expanduser("~/.claude")
@@ -218,21 +224,6 @@ def main():
         spath = os.path.join(root, ".claude", "settings.json")
         ref = "$CLAUDE_PROJECT_DIR/.claude/ctxguard"
     mpath = os.path.join(root, ".mcp.json")
-
-    if wrap:
-        m = load_json(mpath)
-        srv = (m.get("mcpServers") or {}).get(wrap)
-        if not srv:
-            sys.exit(f"错误：{mpath} 里没有名为 {wrap} 的 mcpServers 条目")
-        if "proxy.py" in json.dumps(srv):
-            print("已经套过代理，无需重复。")
-            return
-        srv["args"] = [os.path.join(".claude", "ctxguard", "proxy.py") if not user else os.path.join(dest, "proxy.py"),
-                       "--", srv["command"], *srv.get("args", [])]
-        srv["command"] = py
-        save_json(mpath, m)
-        print(f"已为 MCP 服务 {wrap} 套上输出转存代理（超过 6000 tokens 的返回会转存成文件，只返回目录）。重启 Claude Code 生效。")
-        return
 
     if uninstall:
         s = load_json(spath)
@@ -258,7 +249,24 @@ def main():
         print("已卸载（settings 里其他配置保持不变）。")
         return
 
-    if backend is not None and not uninstall:
+    py, pyver = find_python(min_py)
+
+    if wrap:
+        m = load_json(mpath)
+        srv = (m.get("mcpServers") or {}).get(wrap)
+        if not srv:
+            sys.exit(f"错误：{mpath} 里没有名为 {wrap} 的 mcpServers 条目")
+        if "proxy.py" in json.dumps(srv):
+            print("已经套过代理，无需重复。")
+            return
+        srv["args"] = [os.path.join(".claude", "ctxguard", "proxy.py") if not user else os.path.join(dest, "proxy.py"),
+                       "--", srv["command"], *srv.get("args", [])]
+        srv["command"] = py
+        save_json(mpath, m)
+        print(f"已为 MCP 服务 {wrap} 套上输出转存代理（超过 6000 tokens 的返回会转存成文件，只返回目录）。重启 Claude Code 生效。")
+        return
+
+    if backend is not None:
         names = [x.strip() for x in backend.split(",") if x.strip()]
         ok = {"auto", "off", "pyast", "treesitter"}
         if not names or any(n not in ok for n in names):
