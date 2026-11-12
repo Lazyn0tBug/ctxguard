@@ -7,7 +7,9 @@
 import bisect
 import contextlib
 import io
+import itertools
 import os
+import pathlib
 import re
 import sqlite3
 import subprocess
@@ -339,8 +341,8 @@ def _re_headings(lines, pat):
 def _rst_headings(lines):
     hs, levels = [], {}
     sym = set("=-~^\"'`#*+:._")
-    for i in range(len(lines) - 1):
-        t, u = lines[i].strip(), lines[i + 1].strip()
+    for i, (a, b) in enumerate(itertools.pairwise(lines)):
+        t, u = a.strip(), b.strip()
         if t and len(u) >= 3 and len(set(u)) == 1 and u[0] in sym and len(u) >= len(t) - 1 and not set(t) <= sym:
             lvl = levels.setdefault(u[0], len(levels) + 1)
             hs.append((i, lvl, t))
@@ -451,7 +453,7 @@ def list_files(root):
         pass
     if paths is None:
         paths = []
-        for dp, dns, fns in os.walk(root):
+        for dp, dns, fns in pathlib.Path(root).walk():
             dns[:] = [d for d in dns if d not in SKIP_DIRS]
             for fn in fns:
                 paths.append(os.path.relpath(os.path.join(dp, fn), root).replace(os.sep, "/"))
@@ -501,12 +503,12 @@ def index_one(con, root, rel):
 def build(root, con=None, time_limit=None, force=False):
     own = con is None
     con = con or open_db(root)
-    t0 = time.time()
+    t0 = time.monotonic()
     paths = list_files(root)
     have = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path,size,mtime FROM files")}
     done = changed = 0
     for rel in paths:
-        if time_limit and time.time() - t0 > time_limit:
+        if time_limit and time.monotonic() - t0 > time_limit:
             break
         try:
             st = os.stat(os.path.join(root, rel))

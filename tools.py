@@ -65,6 +65,8 @@ def load_config(root):
     }
     user = _read_json(os.path.expanduser("~/.ctxguard.json"))
     proj = _read_json(os.path.join(root, ".ctxguard.json"))
+    # 用 update 而不是 |=：|= 会把值类型并集化（并进 JSON 里的 list/dict），
+    # update 保持 cfg 自身的推断类型，ty 才不会被 cfg["max_read_tok"] 的类型搅浑。
     cfg.update({k: v for k, v in user.items() if k != "backends"})
     cfg.update({k: v for k, v in proj.items() if k != "backends"})
     opts = {}
@@ -204,7 +206,7 @@ def t_tree(root, path=".", depth=2, maxrows=100):
     while True:
         ents = {}
         for p, kind, tok, nch in rows:
-            parts = p[len(prefix):].split("/")
+            parts = p.removeprefix(prefix).split("/")
             if len(parts) > d:
                 key, isdir = "/".join(parts[:d]) + "/", True
             else:
@@ -338,9 +340,9 @@ def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):
         return f"ERROR: 路径不存在：{path}"
     if glob:
         scope = [p for p in scope if fnmatch.fnmatch(p, glob) or fnmatch.fnmatch(os.path.basename(p), glob)]
-    t0, hits, timed_out = time.time(), {}, False
+    t0, hits, timed_out = time.monotonic(), {}, False
     for p in scope:
-        if time.time() - t0 > 15:
+        if time.monotonic() - t0 > 15:
             timed_out = True
             break
         full = os.path.join(root, p)

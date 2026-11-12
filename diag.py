@@ -72,13 +72,13 @@ def doctor(root, cfg):
 
 
 def _check_sample(mod, lang, code, must, forbid, levels, ext, p):
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         decls = mod.declarations(code, ext, dict(lib.BACKEND_OPTS))
     except Exception as ex:  # noqa: BLE001
         p("   ✗ %-10s 解析出错: %s: %s" % (lang, type(ex).__name__, str(ex)[:150]))
         return 1
-    ms = (time.time() - t0) * 1000
+    ms = (time.monotonic() - t0) * 1000
     if decls is None:
         p("   ✗ %-10s 后端返回 None（解析器不可用或解析失败）" % lang)
         return 1

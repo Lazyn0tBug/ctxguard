@@ -92,7 +92,7 @@ def load(name):
         if name in BUILTIN:
             mod = importlib.import_module(BUILTIN[name])
         elif name.startswith("plugin:"):
-            path = os.path.abspath(os.path.expanduser(name[7:]))
+            path = os.path.abspath(os.path.expanduser(name.removeprefix("plugin:")))
             spec = importlib.util.spec_from_file_location("ctxguard_plugin_%x" % (hash(path) & 0xFFFFFF), path)
             if spec is None or spec.loader is None:
                 raise ImportError("无法为插件创建模块规格：%s" % path)
@@ -187,7 +187,7 @@ def _sig_one(name):
             extra = getattr(mod, "signature_extra", None)
             return "%s@%s%s" % (name, getattr(mod, "VERSION", "?"), ("(" + extra() + ")") if extra else "")
         if name.startswith("plugin:"):
-            p = os.path.abspath(os.path.expanduser(name[7:]))
+            p = os.path.abspath(os.path.expanduser(name.removeprefix("plugin:")))
             st = os.stat(p)
             return "%s@%d:%d" % (name, st.st_size, int(st.st_mtime))
         mod = load(name)
