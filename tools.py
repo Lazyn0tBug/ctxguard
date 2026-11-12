@@ -44,6 +44,29 @@ def find_root(start: str | None = None) -> str:
     return start
 
 
+@dataclass(frozen=True)
+class Arg:
+    """一个工具参数的完整描述：命令行、协议 schema、实现三边共用同一份声明。"""
+
+    name: str
+    kind: str = "str"              # str / int
+    flag: str | None = None        # CLI 长选项名（None 表示位置参数）
+    default: Any = None
+    required: bool = False
+    description: str = ""
+    enum: tuple[str, ...] = ()     # 限定取值
+
+
+@dataclass(frozen=True)
+class Tool:
+    """一个工具的完整描述：实现 + 参数 + 一句话说明。"""
+
+    name: str
+    summary: str
+    fn: Any                          # Callable[..., str]
+    args: tuple[Arg, ...] = ()
+
+
 @dataclass(slots=True)
 class Config:
     """生效中的配置。每一项都经过校验：写坏的项退回默认并警告。
@@ -176,6 +199,21 @@ def load_config(root: str) -> Config:
     backends.LOG_PATH = os.path.join(root, lib.INDEX_DIR, "backend.log")
     lib.CONFIG_LOADED = True
     return cfg
+
+
+def read_stdin_json() -> dict[str, Any] | None:
+    """读 Claude Code 送来的 hook payload（stdin 上的 JSON）。不是合法 JSON 返回 None。"""
+    try:
+        d = json.load(sys.stdin)
+    except Exception:
+        return None
+    return d if _is_dict(d) else None
+
+
+def project_context(cwd: str | None = None) -> tuple[str, Config]:
+    """定位项目根并加载配置。所有入口（hook / CLI / MCP / 代理）的公共前奏。"""
+    root = find_root(cwd or os.getcwd())
+    return root, load_config(root)
 
 
 def resolve(root: str, path: str | None) -> tuple[str, str]:
@@ -501,3 +539,84 @@ def t_symbols(root: str, query: str = "", path: str | None = None, limit: int = 
 def overview(root: str, maxrows: int = 25) -> str:
     out = t_tree(root, ".", depth=1, maxrows=maxrows).split("\n")
     return "\n".join(out[:-1])
+
+
+# ---------------------------------------------------------------- 工具注册表
+# 五个工具的实现、命令行参数、MCP 协议 schema 都从这张表生成——加一个工具只改这一处，
+# index.py 与 server.py 自动跟上，不会出现“实现了但协议里没有”或“schema 与实现漂移”。
+TOOLS: tuple[Tool, ...] = (
+    Tool(
+        "tree",
+        "列出目录结构：每项带文件数/估算tokens/段数，不含正文。大目录自动折叠层级。读取任何文件之前先用它建立全局认识。",
+        t_tree,
+        (
+            Arg("path", "str", None, ".", description="目录路径，默认项目根"),
+            Arg("depth", "int", "depth", 2, description="展开层级，默认2"),
+        ),
+    ),
+    Tool(
+        "outline",
+        "文件目录：按函数/类/标题切成段，每段给出起止行、tokens、标题和一句摘要。读文件前先看它，再决定读哪一段。",
+        t_outline,
+        (Arg("path", "str", None, "", required=True, description="文件路径"),),
+    ),
+    Tool(
+        "read",
+        "按行区间读取文件的一小段（带行号）。单次有上限，超限会被拒绝并给出目录。小文件可省略区间。",
+        t_read,
+        (
+            Arg("path", "str", None, "", required=True, description="文件路径"),
+            Arg("start", "int", "start", None, description="起始行(1基)"),
+            Arg("end", "int", "end", None, description="结束行(含)，省略则读200行"),
+        ),
+    ),
+    Tool(
+        "search",
+        "正则搜索，三级下钻：默认先返回 文件→命中的段（带次数），范围缩小后自动给出具体行。比全仓 grep 安全。",
+        t_search,
+        (
+            Arg("pattern", "str", None, "", required=True, description="正则表达式"),
+            Arg("path", "str", "path", ".", description="文件或目录，默认项目根"),
+            Arg("mode", "str", "mode", "auto", description="auto=自动、files=只给文件、lines=给具体行",
+                enum=("auto", "files", "lines")),
+            Arg("glob", "str", "glob", None, description="文件名过滤，如 *.py"),
+            Arg("limit", "int", "limit", 40, description="lines 模式最多返回的行数(默认40，上限100)"),
+        ),
+    ),
+    Tool(
+        "symbols",
+        "按名称子串查找函数/类/标题等声明，返回 路径:行号 | 声明。传文件路径且不传 query 则列出该文件全部声明。",
+        t_symbols,
+        (
+            Arg("query", "str", None, "", description="名称子串，留空则列出全部"),
+            Arg("path", "str", "path", None, description="限定文件或目录"),
+            Arg("limit", "int", "limit", 50, description="最多返回条数(默认50，上限200)"),
+        ),
+    ),
+)
+
+BY_NAME = {t.name: t for t in TOOLS}
+
+
+def tool_schema(tool: Tool) -> dict[str, Any]:
+    """MCP 的 inputSchema：从参数声明生成。"""
+    props: dict[str, Any] = {}
+    required: list[str] = []
+    for a in tool.args:
+        p: dict[str, Any] = {"type": "integer" if a.kind == "int" else "string",
+                             "description": a.description}
+        if a.enum:
+            p["enum"] = list(a.enum)
+        props[a.name] = p
+        if a.required:
+            required.append(a.name)
+    schema: dict[str, Any] = {"type": "object", "properties": props}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def call_tool(tool: Tool, root: str, values: dict[str, Any]) -> str:
+    """按注册表调用工具：只传该工具声明过的参数，缺的用默认值补上。"""
+    kwargs = {a.name: values.get(a.name, a.default) for a in tool.args}
+    return tool.fn(root, **kwargs)

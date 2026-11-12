@@ -123,6 +123,10 @@ uv run pytest -q                 # 同上，静默模式
 uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
 ```
 
+**工具注册表**：`tools.py` 末尾的 `TOOLS` 是 `tree / outline / read / search / symbols` 的唯一
+声明处——CLI 子命令（`index.py`）和 MCP 工具列表（`server.py`）都从它生成，参数与协议 schema
+也出自同一张表。加一个工具只改这一处，不会出现“实现了但协议里没有”或“schema 与实现漂移”。
+
 两条规则按项目风格放宽，改动前先看 `pyproject.toml` 里的注释：
 
 - `E501`（行宽）：中文注释按字符计宽天然超 100，强行折行会切碎语义。

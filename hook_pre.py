@@ -336,12 +336,10 @@ def handle_bash(root, d, cfg):
 
 def main():
     try:
-        d = json.load(sys.stdin)
-    except Exception:
-        return
-    try:
-        root = tools.find_root(d.get("cwd") or os.getcwd())
-        cfg = tools.load_config(root)
+        d = tools.read_stdin_json()
+        if d is None:
+            return
+        root, cfg = tools.project_context(d.get("cwd"))
         name = d.get("tool_name")
         if name == "Read":
             handle_read(root, d, cfg)

@@ -22,8 +22,7 @@ import lib  # noqa: E402
 import tools  # noqa: E402
 
 THRESH = int(os.environ.get("CTXGUARD_PROXY_TOK", "6000"))
-ROOT = tools.find_root()
-tools.load_config(ROOT)
+ROOT, _CFG = tools.project_context()
 STASH = os.path.join(ROOT, lib.INDEX_DIR, "stash")
 
 

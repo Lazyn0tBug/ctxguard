@@ -18,61 +18,24 @@ CFG = tools.load_config(ROOT)
 BUDGET = CFG.session_budget
 served = 0
 
-TOOLS = [
-    {"name": "tree",
-     "description": "列出目录结构：每项带文件数/估算tokens/段数，不含正文。大目录自动折叠层级。读取任何文件之前先用它建立全局认识。",
-     "inputSchema": {"type": "object", "properties": {
-         "path": {"type": "string", "description": "目录路径，默认项目根"},
-         "depth": {"type": "integer", "description": "展开层级，默认2"}}}},
-    {"name": "outline",
-     "description": "文件目录：按函数/类/标题切成段，每段给出起止行、tokens、标题和一句摘要。读文件前先看它，再决定读哪一段。",
-     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-    {"name": "read",
-     "description": "按行区间读取文件的一小段（带行号）。单次有上限，超限会被拒绝并给出目录。小文件可省略区间。",
-     "inputSchema": {"type": "object", "properties": {
-         "path": {"type": "string"},
-         "start": {"type": "integer", "description": "起始行(1基)"},
-         "end": {"type": "integer", "description": "结束行(含)，省略则读200行"}}, "required": ["path"]}},
-    {"name": "search",
-     "description": "正则搜索，三级下钻：默认先返回 文件→命中的段（带次数），范围缩小后自动给出具体行。比全仓 grep 安全。",
-     "inputSchema": {"type": "object", "properties": {
-         "pattern": {"type": "string"},
-         "path": {"type": "string", "description": "文件或目录，默认项目根"},
-         "mode": {"type": "string", "enum": ["auto", "files", "lines"]},
-         "glob": {"type": "string", "description": "文件名过滤，如 *.py"},
-         "limit": {"type": "integer", "description": "lines 模式最多返回的行数(默认40，上限100)"}},
-         "required": ["pattern"]}},
-    {"name": "symbols",
-     "description": "按名称子串查找函数/类/标题等声明，返回 路径:行号 | 声明。传文件路径且不传 query 则列出该文件全部声明。",
-     "inputSchema": {"type": "object", "properties": {
-         "query": {"type": "string"}, "path": {"type": "string"}, "limit": {"type": "integer"}}}},
-]
+# 工具清单与参数 schema 都来自 tools.TOOLS 注册表，不再另写一份
+TOOLS = [{"name": t.name, "description": t.summary, "inputSchema": tools.tool_schema(t)}
+         for t in tools.TOOLS]
 
 
 def call(name, a):
     global served
-    match name:
-        case "tree":
-            return tools.t_tree(ROOT, a.get("path", "."), a.get("depth", 2))
-        case "outline":
-            return tools.t_outline(ROOT, a["path"])
-        case "read":
-            text = tools.t_read(ROOT, a["path"], a.get("start"), a.get("end"))
-            if text.startswith(("REFUSED", "ERROR")):
-                return text
-            tok = lib.est_tokens(text)
-            if BUDGET > 0 and served + tok > BUDGET:
-                return (f"REFUSED: 本会话已通过 ctxguard 读取约 {served}tok，预算 {BUDGET}tok 用尽。"
-                        "请把需要通读的材料交给子 agent（只让它返回结论和 路径:行号），或 /compact、/clear 后继续。")
-            served += tok
-            return text
-        case "search":
-            return tools.t_search(ROOT, a["pattern"], a.get("path", "."), a.get("mode", "auto"),
-                                  a.get("limit", 40), a.get("glob"))
-        case "symbols":
-            return tools.t_symbols(ROOT, a.get("query", ""), a.get("path"), a.get("limit", 50))
-        case _:
-            raise ValueError(f"未知工具：{name}")
+    tool = tools.BY_NAME.get(name)
+    if tool is None:
+        raise ValueError(f"未知工具：{name}")
+    text = tools.call_tool(tool, ROOT, a)
+    if tool.name == "read" and not text.startswith(("REFUSED", "ERROR")):
+        tok = lib.est_tokens(text)
+        if BUDGET > 0 and served + tok > BUDGET:
+            return (f"REFUSED: 本会话已通过 ctxguard 读取约 {served}tok，预算 {BUDGET}tok 用尽。"
+                    "请把需要通读的材料交给子 agent（只让它返回结论和 路径:行号），或 /compact、/clear 后继续。")
+        served += tok
+    return text
 
 
 def send(obj):

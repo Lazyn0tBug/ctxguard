@@ -2,7 +2,6 @@
 """ctxguard SessionStart hook：增量更新索引，并把项目目录概览注入上下文（索引优先）。
 source=clear/compact 时重置主线程累计读取预算。任何异常都静默退出，绝不影响会话启动。"""
 import contextlib
-import json
 import os
 import sys
 
@@ -14,12 +13,8 @@ import tools  # noqa: E402
 def main():
     lib.set_stdout_encoding()
     try:
-        d = json.load(sys.stdin)
-    except Exception:
-        d = {}
-    try:
-        root = tools.find_root(d.get("cwd") or os.getcwd())
-        tools.load_config(root)
+        d = tools.read_stdin_json() or {}
+        root, cfg = tools.project_context(d.get("cwd"))
         if d.get("source") in ("clear", "compact"):
             sid = d.get("session_id") or "default"
             p = os.path.join(root, lib.INDEX_DIR, "session-%s.json" % "".join(c if c.isalnum() or c in "_-" else "_" for c in sid))

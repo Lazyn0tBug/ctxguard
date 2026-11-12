@@ -157,6 +157,11 @@ srv_in.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"
 srv_in.flush()
 r = rpc(2, "tools/list")
 check("MCP tools/list 含 5 个工具", {t["name"] for t in r["result"]["tools"]} == {"tree", "outline", "read", "search", "symbols"}, str(r)[:200])
+mcp_names = {t["name"] for t in r["result"]["tools"]}
+help_out = cli("--help")
+cli_names = set(help_out.split("{", 1)[1].split("}", 1)[0].split(",")) if "{" in help_out else set()
+check("MCP 工具与 CLI 子命令同源（每个 MCP 工具都有对应子命令）", mcp_names <= cli_names,
+      (sorted(mcp_names), sorted(cli_names)))
 r = rpc(3, "tools/call", {"name": "read", "arguments": {"path": "svc/orders.py"}})
 check("MCP read 整份大文件 → isError + 目录", r["result"]["isError"] and "Handler0" in r["result"]["content"][0]["text"], str(r)[:200])
 r = rpc(4, "tools/call", {"name": "read", "arguments": {"path": "svc/orders.py", "start": 1, "end": 25}})

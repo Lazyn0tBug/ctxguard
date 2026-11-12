@@ -28,25 +28,23 @@ def main():
     b.add_argument("--force", action="store_true")
     b.add_argument("--quiet", action="store_true")
     b.add_argument("--time-limit", type=float, default=None)
-    t = sub.add_parser("tree")
-    t.add_argument("path", nargs="?", default=".")
-    t.add_argument("--depth", type=int, default=2)
-    o = sub.add_parser("outline")
-    o.add_argument("path")
-    r = sub.add_parser("read")
-    r.add_argument("path")
-    r.add_argument("--start", type=int)
-    r.add_argument("--end", type=int)
-    s = sub.add_parser("search")
-    s.add_argument("pattern")
-    s.add_argument("--path", default=".")
-    s.add_argument("--mode", default="auto", choices=["auto", "files", "lines"])
-    s.add_argument("--glob")
-    s.add_argument("--limit", type=int, default=40)
-    y = sub.add_parser("symbols")
-    y.add_argument("query", nargs="?", default="")
-    y.add_argument("--path")
-    y.add_argument("--limit", type=int, default=50)
+    for tool in tools.TOOLS:          # 子命令与参数由注册表生成，不另写一份
+        p = sub.add_parser(tool.name, help=tool.summary)
+        for arg in tool.args:
+            if not arg.flag:
+                if arg.required:
+                    p.add_argument(arg.name, help=arg.description)
+                else:
+                    p.add_argument(arg.name, nargs="?", default=arg.default, help=arg.description)
+            elif arg.kind == "int":
+                p.add_argument("--" + arg.flag, dest=arg.name, type=int,
+                               default=arg.default, help=arg.description)
+            elif arg.enum:
+                p.add_argument("--" + arg.flag, dest=arg.name, choices=list(arg.enum),
+                               default=arg.default, help=arg.description)
+            else:
+                p.add_argument("--" + arg.flag, dest=arg.name,
+                               default=arg.default, help=arg.description)
     sub.add_parser("doctor")
     c = sub.add_parser("compare")
     c.add_argument("path")
@@ -54,30 +52,24 @@ def main():
     a = ap.parse_args()
 
     root = tools.find_root()
-    tools.load_config(root)
+    cfg = tools.load_config(root)
     if a.cmd == "build":
         res = lib.build(root, time_limit=a.time_limit, force=a.force)
         if not a.quiet:
             print(f"索引完成：{res['done']}/{res['total']} 个文件，本次更新 {res['changed']} 个"
                   + ("（未完成，下次继续）" if res["partial"] else ""))
-    elif a.cmd == "tree":
-        print(tools.t_tree(root, a.path, a.depth))
-    elif a.cmd == "outline":
-        print(tools.t_outline(root, a.path))
-    elif a.cmd == "read":
-        print(tools.t_read(root, a.path, a.start, a.end))
-    elif a.cmd == "search":
-        print(tools.t_search(root, a.pattern, a.path, a.mode, a.limit, a.glob))
+    elif a.cmd in tools.BY_NAME:
+        tool = tools.BY_NAME[a.cmd]
+        values = {arg.name: getattr(a, arg.name) for arg in tool.args}
+        print(tools.call_tool(tool, root, values))
     elif a.cmd == "doctor":
         import diag
-        text, problems = diag.doctor(root, tools.load_config(root))
+        text, problems = diag.doctor(root, cfg)
         print(text)
         sys.exit(1 if problems else 0)
     elif a.cmd == "compare":
         import diag
         print(diag.compare(root, a.path, a.backend))
-    elif a.cmd == "symbols":
-        print(tools.t_symbols(root, a.query, a.path, a.limit))
 
 
 if __name__ == "__main__":
