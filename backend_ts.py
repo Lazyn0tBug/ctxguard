@@ -19,7 +19,7 @@ NAME = "treesitter"
 VERSION = "1"        # 修改 SPECS / 遍历逻辑时递增，旧索引会自动重建
 PACKAGES = ("tree-sitter", "tree-sitter-language-pack", "tree-sitter-languages")
 
-MAX_VISITS = 400_000
+MAX_VISITS: int = 400_000
 MAX_RECURSION = 200
 
 F, C, L = "function", "container", "leaf"
@@ -114,7 +114,9 @@ def _via_pack(lang):
             return get_parser(name)
         except Exception as ex:  # noqa: BLE001
             last = ex
-    raise last
+    if last is not None:
+        raise last
+    raise RuntimeError("没有可用的解析器：%s" % lang)
 
 
 def _via_languages(lang):
@@ -125,7 +127,9 @@ def _via_languages(lang):
             return get_parser(name)
         except Exception as ex:  # noqa: BLE001
             last = ex
-    raise last
+    if last is not None:
+        raise last
+    raise RuntimeError("没有可用的解析器：%s" % lang)
 
 
 def _via_pkg(lang):
@@ -166,7 +170,7 @@ def load_errors(lang):
 
 
 # ------------------------------------------------------------------ 遍历
-class _Budget(Exception):
+class _BudgetError(Exception):
     pass
 
 
@@ -258,7 +262,7 @@ def collect(root, spec, lines, opts):
                 continue
             budget[0] -= 1
             if budget[0] <= 0:
-                raise _Budget()
+                raise _BudgetError()
             t = ch.type
             if t in wrappers:
                 inner = _unwrap(ch, spec)
@@ -273,7 +277,7 @@ def collect(root, spec, lines, opts):
 
     try:
         visit(root, 0, 0)
-    except _Budget:
+    except _BudgetError:
         return None
     return out
 

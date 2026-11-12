@@ -7,6 +7,7 @@ NAME = "pyast"
 VERSION = "1"
 
 _FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+_DECL = _FUNC + (ast.ClassDef,)
 _FLOW = tuple(t for t in (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.AsyncFor, ast.While,
                           getattr(ast, "TryStar", None), getattr(ast, "Match", None)) if t is not None)
 
@@ -39,7 +40,7 @@ def declarations(text, ext, opts):
 
     def walk(body, level):
         for n in body:
-            if isinstance(n, _FUNC) or isinstance(n, ast.ClassDef):
+            if isinstance(n, _DECL):
                 start = min([n.lineno] + [d.lineno for d in n.decorator_list]) - 1
                 out.append((start, level, _sig(lines, n), n.end_lineno - 1))
                 if level < max_level and (isinstance(n, ast.ClassDef) or desc_fn):

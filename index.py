@@ -21,10 +21,7 @@ import tools  # noqa: E402
 
 
 def main():
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    lib.set_stdout_encoding()
     ap = argparse.ArgumentParser(prog="ctxguard")
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")

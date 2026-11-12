@@ -17,7 +17,8 @@ def w(rel, text):
         f.write(text)
 
 
-body = lambda n, ind: "".join(f"{' ' * ind}x{i} = compute(a, b) + {i}  # step {i}\n" for i in range(n))
+def body(n, ind):
+    return "".join(f"{' ' * ind}x{i} = compute(a, b) + {i}  # step {i}\n" for i in range(n))
 
 # Python：多个类，每类多个方法
 py = '"""订单处理服务。"""\nimport os\nimport sys\n\n'

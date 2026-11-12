@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-import time
+import tempfile
 
 SRC, REPO = sys.argv[1], sys.argv[2]
 PY = sys.executable
@@ -28,18 +28,26 @@ def bash(cmd):
     return hook("Bash", {"command": cmd})
 
 
-R = lambda p: os.path.join(REPO, p)
+def pipes(p):
+    """取出子进程的非空 stdin/stdout（管道模式下必定存在）。"""
+    si, so = p.stdin, p.stdout
+    assert si is not None and so is not None
+    return si, so
+
+
+def repo_path(p):
+    return os.path.join(REPO, p)
 
 # ---------------- Read
-c, e = hook("Read", {"file_path": R("svc/orders.py")})
+c, e = hook("Read", {"file_path": repo_path("svc/orders.py")})
 check("Read 大文件整份 → 拒绝并给目录", c == 2 and "Handler0" in e and "outline" in e or (c == 2 and "起始行" in e or "Handler0" in e), e)
-c, e = hook("Read", {"file_path": R("svc/orders.py"), "offset": 26, "limit": 18})
+c, e = hook("Read", {"file_path": repo_path("svc/orders.py"), "offset": 26, "limit": 18})
 check("Read 一小段 → 放行", c == 0, e)
-c, e = hook("Read", {"file_path": R("svc/orders.py"), "offset": 1, "limit": 2000})
+c, e = hook("Read", {"file_path": repo_path("svc/orders.py"), "offset": 1, "limit": 2000})
 check("Read 超大区间 → 拒绝", c == 2, e)
-c, e = hook("Read", {"file_path": R("README.md")})
+c, e = hook("Read", {"file_path": repo_path("README.md")})
 check("Read 小文件 → 放行", c == 0, e)
-c, e = hook("Read", {"file_path": R("data/dump.json")})
+c, e = hook("Read", {"file_path": repo_path("data/dump.json")})
 check("Read 压缩 JSON → 拒绝并指向视图", c == 2 and "视图" in e, e)
 views = os.path.join(REPO, ".ctxindex", "views")
 vf = [f for f in os.listdir(views)] if os.path.isdir(views) else []
@@ -47,11 +55,11 @@ check("超长行视图已生成", len(vf) == 1, str(vf))
 if vf:
     c, e = hook("Read", {"file_path": os.path.join(views, vf[0]), "offset": 1, "limit": 40})
     check("Read 视图分段 → 放行", c == 0, e)
-c, e = hook("Read", {"file_path": R("assets/logo.png")})
+c, e = hook("Read", {"file_path": repo_path("assets/logo.png")})
 check("Read 二进制/图片 → 放行", c == 0, e)
-c, e = hook("Read", {"file_path": R("node_modules/x/big.js")})
+c, e = hook("Read", {"file_path": repo_path("node_modules/x/big.js")})
 check("Read 被忽略目录里的大文件 → 同样拒绝", c == 2, e)
-c, e = hook("Read", {"file_path": R("docs/plain.txt")})
+c, e = hook("Read", {"file_path": repo_path("docs/plain.txt")})
 check("Read 无结构大文本 → 拒绝并给分段目录", c == 2 and "1-120" in e, e)
 
 # ---------------- Grep
@@ -82,17 +90,18 @@ for cmd, want in cases:
 
 # ---------------- 累计预算
 cfgp = os.path.join(REPO, ".ctxguard.json")
-json.dump({"session_budget": 500}, open(cfgp, "w"))
+with open(cfgp, "w") as f:
+    json.dump({"session_budget": 500}, f)
 for f in os.listdir(os.path.join(REPO, ".ctxindex")):
     if f.startswith("session-"):
         os.remove(os.path.join(REPO, ".ctxindex", f))
-codes = [hook("Read", {"file_path": R("svc/orders.py"), "offset": 1 + 18 * k, "limit": 18}, {"session_id": "bud"})[0] for k in range(5)]
+codes = [hook("Read", {"file_path": repo_path("svc/orders.py"), "offset": 1 + 18 * k, "limit": 18}, {"session_id": "bud"})[0] for k in range(5)]
 check("累计预算：前几次放行，之后拒绝", codes[0] == 0 and codes[-1] == 2, str(codes))
-check("累计预算：子 agent 不受限", hook("Read", {"file_path": R("svc/orders.py"), "offset": 1, "limit": 18}, {"session_id": "bud", "agent_id": "a1"})[0] == 0)
+check("累计预算：子 agent 不受限", hook("Read", {"file_path": repo_path("svc/orders.py"), "offset": 1, "limit": 18}, {"session_id": "bud", "agent_id": "a1"})[0] == 0)
 p = subprocess.run([PY, os.path.join(SRC, "hook_session.py")], input=json.dumps({"cwd": REPO, "session_id": "bud", "source": "compact"}),
                    capture_output=True, text=True, env=env)
 check("SessionStart 注入概览并在 compact 后重置预算", "ctxguard" in p.stdout and "svc/" in p.stdout and
-      hook("Read", {"file_path": R("svc/orders.py"), "offset": 1, "limit": 18}, {"session_id": "bud"})[0] == 0, p.stdout + p.stderr)
+      hook("Read", {"file_path": repo_path("svc/orders.py"), "offset": 1, "limit": 18}, {"session_id": "bud"})[0] == 0, p.stdout + p.stderr)
 os.remove(cfgp)
 
 # ---------------- CLI / 工具
@@ -129,18 +138,19 @@ check("tree 子目录", "orders.py" in out, out)
 
 # ---------------- MCP 服务
 srv = subprocess.Popen([PY, os.path.join(SRC, "server.py")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env, cwd=REPO)
+srv_in, srv_out = pipes(srv)
 
 
 def rpc(i, method, params=None):
-    srv.stdin.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n")
-    srv.stdin.flush()
-    return json.loads(srv.stdout.readline())
+    srv_in.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n")
+    srv_in.flush()
+    return json.loads(srv_out.readline())
 
 
 r = rpc(1, "initialize", {"protocolVersion": "2025-03-26"})
 check("MCP initialize", r["result"]["serverInfo"]["name"] == "ctxguard", str(r))
-srv.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-srv.stdin.flush()
+srv_in.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+srv_in.flush()
 r = rpc(2, "tools/list")
 check("MCP tools/list 含 5 个工具", {t["name"] for t in r["result"]["tools"]} == {"tree", "outline", "read", "search", "symbols"}, str(r)[:200])
 r = rpc(3, "tools/call", {"name": "read", "arguments": {"path": "svc/orders.py"}})
@@ -153,12 +163,13 @@ r = rpc(6, "tools/call", {"name": "nope", "arguments": {}})
 check("MCP 未知工具 → isError", r["result"]["isError"])
 r = rpc(7, "unknown/method")
 check("MCP 未知方法 → error", "error" in r)
-srv.stdin.close()
+srv_in.close()
 srv.wait(timeout=10)
 
 # ---------------- 代理
-fake = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_mcp.py")
-open(fake, "w").write('''
+fake = os.path.join(tempfile.mkdtemp(), "fake_mcp.py")
+with open(fake, "w") as f:
+    f.write('''
 import json, sys
 for line in sys.stdin:
     m = json.loads(line)
@@ -172,12 +183,13 @@ for line in sys.stdin:
     print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": res}), flush=True)
 ''')
 px = subprocess.Popen([PY, os.path.join(SRC, "proxy.py"), "--", PY, fake], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env, cwd=REPO)
+px_in, px_out = pipes(px)
 
 
 def prpc(i, method, params=None):
-    px.stdin.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n")
-    px.stdin.flush()
-    return json.loads(px.stdout.readline())
+    px_in.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n")
+    px_in.flush()
+    return json.loads(px_out.readline())
 
 
 r = prpc(1, "initialize")
@@ -189,7 +201,7 @@ txt = r["result"]["content"][0]["text"]
 check("代理：大结果转存，只返回目录", "已转存" in txt and len(txt) < 6000 and "structuredContent" not in r["result"], txt[:300])
 stash = os.path.join(REPO, ".ctxindex", "stash")
 check("代理：转存文件存在且很大", os.path.isdir(stash) and any(os.path.getsize(os.path.join(stash, f)) > 100000 for f in os.listdir(stash)))
-px.stdin.close()
+px_in.close()
 px.wait(timeout=10)
 
 fails = [n for n, ok in results if not ok]

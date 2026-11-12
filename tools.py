@@ -9,8 +9,17 @@ import subprocess
 import time
 
 import lib
-from lib import (BIN_EXTS, LINE_CLIP, big_file_message, build, chunks_for, est_tokens, open_db,
-                 outline_text, read_lines)
+from lib import (
+    BIN_EXTS,
+    LINE_CLIP,
+    big_file_message,
+    build,
+    chunks_for,
+    est_tokens,
+    open_db,
+    outline_text,
+    read_lines,
+)
 
 
 def like_escape(s):
@@ -117,7 +126,7 @@ def file_tokens(path):
 
 
 def lines_tokens(lines):
-    return est_tokens("\n".join(l[:LINE_CLIP] for l in lines))
+    return est_tokens("\n".join(ln[:LINE_CLIP] for ln in lines))
 
 
 def refresh(root, limit=15):
@@ -141,7 +150,7 @@ def longline_view(root, ab):
     if b"\0" in data[:8192]:
         return None
     text = data.decode("utf-8", "replace")
-    if max((len(l) for l in text.split("\n")), default=0) <= LONG_LINE:
+    if max((len(ln) for ln in text.split("\n")), default=0) <= LONG_LINE:
         return None
     _, rel = resolve(root, ab)
     vdir = os.path.join(root, lib.INDEX_DIR, "views")
@@ -154,11 +163,11 @@ def longline_view(root, ab):
     except Exception:
         body = re.sub(r"([;{}])", r"\1\n", text)
     out = []
-    for l in body.split("\n"):
-        while len(l) > 200:
-            out.append(l[:200])
-            l = l[200:]
-        out.append(l)
+    for ln in body.split("\n"):
+        while len(ln) > 200:
+            out.append(ln[:200])
+            ln = ln[200:]
+        out.append(ln)
     with open(vp, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     return vp
@@ -280,8 +289,8 @@ def t_read(root, path, start=None, end=None):
         return (f"REFUSED: 区间 {s}-{e}（约 {tok}tok）超过单次上限 {lib.MAX_READ_TOK}tok。"
                 f"请缩小区间，或按下面的段分别读取：\n" + outline_text(rows, 40))
     body = "\n".join(
-        f"{i}\t{l if len(l) <= LINE_CLIP else l[:LINE_CLIP] + '…[+%d字符]' % (len(l) - LINE_CLIP)}"
-        for i, l in enumerate(seg, s))
+        f"{i}\t{ln if len(ln) <= LINE_CLIP else ln[:LINE_CLIP] + '…[+%d字符]' % (len(ln) - LINE_CLIP)}"
+        for i, ln in enumerate(seg, s))
     foot = ""
     if e < total:
         nxt = next((r for r in chunks_for(root, ab) if r[0] <= e + 1 <= r[1]), None)
@@ -340,9 +349,9 @@ def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):
         except OSError:
             continue
         hl = []
-        for i, l in enumerate(lines, 1):
-            if rx.search(l[:2000]):
-                hl.append((i, l))
+        for i, ln in enumerate(lines, 1):
+            if rx.search(ln[:2000]):
+                hl.append((i, ln))
                 if len(hl) >= 300:
                     break
         if hl:
@@ -358,10 +367,10 @@ def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):
         shown = 0
         for p in sorted(hits):
             out.append(p)
-            for ln, l in hits[p]:
+            for ln, line in hits[p]:
                 if shown >= limit:
                     break
-                out.append(f"  {ln}: {' '.join(l.split())[:160]}")
+                out.append(f"  {ln}: {' '.join(line.split())[:160]}")
                 shown += 1
             if shown >= limit:
                 out.append(f"  …… 已显示 {shown}/{total} 行，请缩小 path 或换更精确的 pattern")
@@ -383,13 +392,14 @@ def t_symbols(root, query="", path=None, limit=50):
     limit = max(1, min(int(limit or 50), 200))
     con = open_db(root)
     where, args = [], []
-    ab, rel = resolve(root, path) if path else (None, None)
-    if path and os.path.isfile(ab):
-        where.append("path=?")
-        args.append(rel)
-    elif path and rel not in (".", ""):
-        where.append("path LIKE ? ESCAPE '\\'")
-        args.append(like_escape(rel.rstrip("/") + "/") + "%")
+    if path:
+        ab, rel = resolve(root, path)
+        if os.path.isfile(ab):
+            where.append("path=?")
+            args.append(rel)
+        elif rel not in (".", ""):
+            where.append("path LIKE ? ESCAPE '\\'")
+            args.append(like_escape(rel.rstrip("/") + "/") + "%")
     if query:
         where.append("name LIKE ? ESCAPE '\\'")
         args.append("%" + like_escape(query) + "%")

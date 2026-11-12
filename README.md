@@ -3,7 +3,7 @@
 目标：**让任何一次工具调用都不可能把大块内容放进 Claude Code 的上下文**，而不是事后截断。
 做法是取消“读任意内容”的能力，只保留“按索引下钻”的能力：`目录 → 段 → 行`。
 
-只需要 Python 3.8+（标准库），不需要向量库、不需要联网、不需要解析器。
+只需要 Python 3.9+（标准库），不需要向量库、不需要联网、不需要解析器。
 
 ## 安装
 
@@ -87,8 +87,31 @@ python3 .claude/ctxguard/index.py compare <文件>    # 启发式 vs 后端 的�
 
 ## 测试
 
+两支脚本测试（83 项端到端 + 54 项后端）也可以直接跑：
+
 ```bash
 python3 tests/gen_sample.py /tmp/sample && (cd /tmp/sample && git add -A)
 python3 tests/test_all.py "$(pwd)" /tmp/sample      # 83 项：索引、hook、预算、MCP、代理
 python3 tests/test_backends.py "$(pwd)"             # 54 项 + 装了 tree-sitter 后追加的真实语法自检
 ```
+
+## 开发（uv + ruff + ty）
+
+工程配置在 `pyproject.toml`：`uv` 管依赖与解释器，`ruff` 管风格与常见缺陷，`ty` 管类型。
+运行时依然零依赖——`pyproject.toml` 只是开发期的工程描述，ctxguard 本身靠 `install.py`
+复制散装 `.py` 投放，不走打包。
+
+```bash
+uv sync                          # 建 .venv（Python 3.12），装 ruff / ty / pytest
+uv run ruff check .              # 静态检查：E,F,W,I,N,UP,B,SIM
+uv run ty check .                # 类型检查
+uv run pytest                    # 自动造样例仓库并跑完 137 项检查
+uv run pytest -q                 # 同上，静默模式
+uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
+```
+
+两条规则按项目风格放宽，改动前先看 `pyproject.toml` 里的注释：
+
+- `E501`（行宽）：中文注释按字符计宽天然超 100，强行折行会切碎语义。
+- `UP031`（`%` 格式化）：项目一致使用，改 f-string 收益低、churn 大。
+

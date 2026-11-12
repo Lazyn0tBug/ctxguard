@@ -156,9 +156,9 @@ def _redirected(words):
     for i, t in enumerate(words):
         if t in ("&>", "&>>"):
             return True
-        if t in (">", ">>") and i + 1 < len(words) and words[i + 1] != "/dev/null":
-            if i == 0 or words[i - 1] not in ("2",):
-                return True
+        if t in (">", ">>") and i + 1 < len(words) and words[i + 1] != "/dev/null" and \
+                (i == 0 or words[i - 1] not in ("2",)):
+            return True
     return False
 
 

@@ -10,7 +10,6 @@ import ast
 import contextlib
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -18,9 +17,9 @@ import types
 
 SRC = os.path.abspath(sys.argv[1])
 sys.path.insert(0, SRC)
-import backends  # noqa: E402
 import backend_pyast  # noqa: E402
 import backend_ts  # noqa: E402
+import backends  # noqa: E402
 import lib  # noqa: E402
 import tools  # noqa: E402
 
@@ -153,7 +152,8 @@ for root_dir in ("/opt/node22/lib/node_modules/npm/lib", SRC):
                 real.append(os.path.join(dp, f))
 bad = []
 for fp in real[:150]:
-    t = open(fp, encoding="utf-8", errors="replace").read()
+    with open(fp, encoding="utf-8", errors="replace") as f:
+        t = f.read()
     ext = os.path.splitext(fp)[1]
     for names in ([], ["pyast"], ["treesitter", "pyast"]):
         if not covers(t, chunks(t, ext, names)):
@@ -161,7 +161,12 @@ for fp in real[:150]:
 check("不变量：%d 个真实文件 × 3 种配置，分段完整覆盖且不重叠" % min(len(real), 150), not bad, bad[:3])
 
 # ---- 回退：与不开后端逐字一致
-text_js = open("/opt/node22/lib/node_modules/npm/lib/commands/ls.js", encoding="utf-8").read() if os.path.exists("/opt/node22/lib/node_modules/npm/lib/commands/ls.js") else "\n".join("function f%d() {\n  return %d;\n}\n" % (i, i) for i in range(60))
+npm_js = "/opt/node22/lib/node_modules/npm/lib/commands/ls.js"
+if os.path.exists(npm_js):
+    with open(npm_js, encoding="utf-8") as f:
+        text_js = f.read()
+else:
+    text_js = "\n".join("function f%d() {\n  return %d;\n}\n" % (i, i) for i in range(60))
 base = [(c["s"], c["e"], c["title"]) for c in chunks(text_js, ".js", [])]
 for label, names in (("未知后端名", ["no_such_backend"]), ("后端不支持该扩展名", ["pyast"]),
                      ("treesitter 未装依赖", ["treesitter"])):
@@ -173,7 +178,8 @@ plug = os.path.join(tmp, "plug.py")
 
 
 def write_plugin(body):
-    open(plug, "w").write(body)
+    with open(plug, "w") as f:
+        f.write(body)
     backends._cache.clear()
     backends._sig_one.cache_clear()
 
@@ -206,13 +212,15 @@ proj = tempfile.mkdtemp()
 home = tempfile.mkdtemp()
 os.environ["HOME"] = home
 os.environ.pop("CTXGUARD_BACKENDS", None)
-json.dump({"backends": ["plugin:/tmp/evil.py", "pyast", "some.module"]}, open(os.path.join(proj, ".ctxguard.json"), "w"))
+with open(os.path.join(proj, ".ctxguard.json"), "w") as f:
+    json.dump({"backends": ["plugin:/tmp/evil.py", "pyast", "some.module"]}, f)
 c = tools.load_config(proj)
 check("安全：项目级配置只接受内置后端名", lib.BACKENDS == ["pyast"] and set(lib.BACKEND_IGNORED) == {"plugin:/tmp/evil.py", "some.module"}, (lib.BACKENDS, lib.BACKEND_IGNORED))
-json.dump({"backends": ["plugin:" + plug]}, open(os.path.join(home, ".ctxguard.json"), "w"))
+with open(os.path.join(home, ".ctxguard.json"), "w") as f:
+    json.dump({"backends": ["plugin:" + plug]}, f)
 os.remove(os.path.join(proj, ".ctxguard.json"))
 tools.load_config(proj)
-check("用户级配置允许 plugin:", lib.BACKENDS == ["plugin:" + plug], lib.BACKENDS)
+check("用户级配置允许 plugin:", ["plugin:" + plug] == lib.BACKENDS, lib.BACKENDS)
 os.environ["CTXGUARD_BACKENDS"] = "auto"
 tools.load_config(proj)
 check("环境变量优先且 auto 展开为 [treesitter, pyast]", lib.BACKENDS == ["treesitter", "pyast"], lib.BACKENDS)
@@ -229,8 +237,10 @@ check("expand: 逗号/列表/重复/off", backends.expand("pyast, pyast") == ["p
 # ---- 索引签名：后端/参数变化使旧索引失效
 repo = tempfile.mkdtemp()
 subprocess.run(["git", "init", "-q"], cwd=repo)
-open(os.path.join(repo, "a.py"), "w").write(SAMPLE)
-open(os.path.join(repo, "b.py"), "w").write("def f():\n    return 1\n")
+with open(os.path.join(repo, "a.py"), "w") as f:
+    f.write(SAMPLE)
+with open(os.path.join(repo, "b.py"), "w") as f:
+    f.write("def f():\n    return 1\n")
 subprocess.run(["git", "add", "-A"], cwd=repo)
 with cfg([]):
     r1 = lib.build(repo)
@@ -318,7 +328,7 @@ def install_fake_pack(parsers):
         if name in parsers:
             return parsers[name]
         raise LookupError("no grammar " + name)
-    mod.get_parser = get_parser
+    mod.__dict__["get_parser"] = get_parser
     sys.modules["tree_sitter_language_pack"] = mod
     backend_ts._PARSERS.clear()
     backend_ts._LOAD_ERRORS.clear()
@@ -432,7 +442,7 @@ check("tree-sitter 遍历（JS 形状）：签名取到函数体之前", got is 
 # 解析器加载顺序：第一种方式失败时尝试下一种
 sys.modules.pop("tree_sitter_language_pack", None)
 fake2 = types.ModuleType("tree_sitter_languages")
-fake2.get_parser = lambda name: FakePyParser()
+fake2.__dict__["get_parser"] = lambda name: FakePyParser()
 sys.modules["tree_sitter_languages"] = fake2
 backend_ts._PARSERS.clear()
 _p = backend_ts.get_parser("python")

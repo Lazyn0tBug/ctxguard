@@ -74,8 +74,9 @@ def call(name, a):
 
 
 def send(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    out = lib.stdout()
+    out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    out.flush()
 
 
 def handle(msg):
@@ -101,11 +102,8 @@ def handle(msg):
 
 
 def main():
-    try:
-        sys.stdin.reconfigure(encoding="utf-8")
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+    lib.set_stdout_encoding()
+    lib.set_stdin_encoding()
     threading.Thread(target=lambda: lib.build(ROOT, time_limit=60), daemon=True).start()
     for line in sys.stdin:
         line = line.strip()

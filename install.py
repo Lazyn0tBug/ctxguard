@@ -92,34 +92,44 @@ def drop_ours(settings):
 
 
 def upsert_block(path, block):
-    text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    text = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
     if MARK_B in text and MARK_E in text:
         a, b = text.index(MARK_B), text.index(MARK_E) + len(MARK_E)
         text = text[:a].rstrip("\n") + ("\n\n" if text[:a].strip() else "") + block.rstrip("\n") + text[b:]
     else:
         text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block
-    open(path, "w", encoding="utf-8").write(text if text.endswith("\n") else text + "\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
 
 
 def remove_block(path):
     if not os.path.exists(path):
         return
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
     if MARK_B in text and MARK_E in text:
         a, b = text.index(MARK_B), text.index(MARK_E) + len(MARK_E)
         text = (text[:a].rstrip("\n") + "\n" + text[b:].lstrip("\n")).strip("\n")
         if text:
-            open(path, "w", encoding="utf-8").write(text + "\n")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
         else:
             os.remove(path)
 
 
 def add_gitignore(root):
     p = os.path.join(root, ".gitignore")
-    cur = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+    cur = ""
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as f:
+            cur = f.read()
     add = [x for x in (".ctxindex/", ".claude/ctxguard/__pycache__/") if x not in cur]
     if add:
-        open(p, "a", encoding="utf-8").write(("" if cur.endswith("\n") or not cur else "\n") + "\n".join(add) + "\n")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(("" if cur.endswith("\n") or not cur else "\n") + "\n".join(add) + "\n")
 
 
 def main():

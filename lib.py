@@ -5,10 +5,13 @@
 切成“带标题和摘要的小段”，存进 SQLite。之后模型只能按 目录 -> 段 -> 行 下钻。
 """
 import bisect
+import contextlib
+import io
 import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 
 INDEX_DIR = ".ctxindex"
@@ -23,7 +26,7 @@ MAX_INDEX_BYTES = 20 * 1024 * 1024
 BACKENDS = []
 BACKEND_OPTS = {"descend_functions": False, "max_depth": 6}
 BACKEND_IGNORED = []        # 被安全策略忽略的项目级后端名（doctor 会显示）
-CONFIG_LOADED = False       # 未加载配置的进程（如只读 chunks_for）不做索引签名校验，避免互相清库
+CONFIG_LOADED: bool = False  # 未加载配置的进程（如只读 chunks_for）不做索引签名校验，避免互相清库
 INDEX_VERSION = "3"
 
 DOC_EXTS = {".md", ".markdown", ".mdx", ".rst", ".txt", ".adoc", ".asciidoc", ".org"}
@@ -39,6 +42,26 @@ SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", "target",
     ".next", INDEX_DIR, ".idea", ".gradle", ".tox", ".mypy_cache", ".pytest_cache", ".cache",
 }
+
+
+# ---------------------------------------------------------------- 标准输出
+def stdout():
+    """标准输出流。个别环境（pythonw、被重定向成 None）下 sys.stdout 为 None，退回空流避免崩溃。"""
+    return sys.stdout if sys.stdout is not None else io.StringIO()
+
+
+def set_stdout_encoding():
+    """把标准输出切到 UTF-8；环境不支持 reconfigure 时静默跳过。"""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
+
+
+def set_stdin_encoding():
+    """把标准输入切到 UTF-8；环境不支持 reconfigure 时静默跳过。"""
+    reconfigure = getattr(sys.stdin, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
 
 
 # ---------------------------------------------------------------- 估算
@@ -71,7 +94,7 @@ def split_lines(text):
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
-    return [l[:-1] if l.endswith("\r") else l for l in lines]
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in lines]
 
 
 def read_lines(path):
@@ -123,22 +146,22 @@ def find_decls(lines, ext):
     extra = EXT_DECL.get(ext)
     out = []
     n = len(lines)
-    for i, l in enumerate(lines):
-        if not l or l.isspace() or len(l) > 400:
+    for i, ln in enumerate(lines):
+        if not ln or ln.isspace() or len(ln) > 400:
             continue
         hit = False
         if extra is not None:
-            hit = bool(extra.match(l))
+            hit = bool(extra.match(ln))
         else:
-            hit = bool(DECL_KW.match(l) or DECL_ARROW.match(l) or DECL_METHOD.match(l) or DECL_SH.match(l)
-                       or DECL_LISP.match(l) or DECL_SQL.match(l) or DECL_SECT.match(l))
-            if not hit and l[0] not in " \t{}#/*" and DECL_C_SIG.match(l):
+            hit = bool(DECL_KW.match(ln) or DECL_ARROW.match(ln) or DECL_METHOD.match(ln) or DECL_SH.match(ln)
+                       or DECL_LISP.match(ln) or DECL_SQL.match(ln) or DECL_SECT.match(ln))
+            if not hit and ln[0] not in " \t{}#/*" and DECL_C_SIG.match(ln):
                 j = i + 1
                 while j < n and not lines[j].strip():
                     j += 1
                 hit = j < n and lines[j].lstrip().startswith("{")
         if hit:
-            out.append((i, indent_of(l), l.strip()[:120]))
+            out.append((i, indent_of(ln), ln.strip()[:120]))
     return out
 
 
@@ -287,8 +310,8 @@ def _finalize(lines, pieces, is_doc):
 
 def _md_headings(lines):
     hs, fence = [], None
-    for i, l in enumerate(lines):
-        s = l.lstrip()
+    for i, ln in enumerate(lines):
+        s = ln.lstrip()
         if s.startswith("```") or s.startswith("~~~"):
             if fence is None:
                 fence = s[:3]
@@ -297,7 +320,7 @@ def _md_headings(lines):
             continue
         if fence:
             continue
-        m = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", l)
+        m = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", ln)
         if m:
             hs.append((i, len(m.group(1)), m.group(2)))
     return hs
@@ -306,8 +329,8 @@ def _md_headings(lines):
 def _re_headings(lines, pat):
     rx = re.compile(pat)
     hs = []
-    for i, l in enumerate(lines):
-        m = rx.match(l)
+    for i, ln in enumerate(lines):
+        m = rx.match(ln)
         if m:
             hs.append((i, len(m.group(1)), m.group(2)))
     return hs
@@ -394,10 +417,8 @@ def open_db(root):
         with open(gi, "w") as f:
             f.write("*\n")
     con = sqlite3.connect(os.path.join(d, "index.db"), timeout=30)
-    try:
+    with contextlib.suppress(sqlite3.Error):
         con.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.Error:
-        pass
     con.executescript(SCHEMA)
     if CONFIG_LOADED:
         try:

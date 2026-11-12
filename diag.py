@@ -63,8 +63,9 @@ def doctor(root, cfg):
     log = backends.LOG_PATH
     if log and os.path.exists(log):
         p("最近的后端日志 (%s):" % os.path.relpath(log, root))
-        for line in open(log, encoding="utf-8").read().splitlines()[-8:]:
-            p("  " + line[:200])
+        with open(log, encoding="utf-8") as f:
+            for line in f.read().splitlines()[-8:]:
+                p("  " + line[:200])
     p("")
     p("结论: " + ("全部自检通过" if problems == 0 else "%d 项需要处理（见上面带 ✗ / 加载失败 的行）" % problems))
     return "\n".join(out), problems

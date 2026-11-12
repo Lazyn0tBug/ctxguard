@@ -1,0 +1,51 @@
+[project]
+name = "ctxguard"
+version = "0.1.0"
+description = "索引优先的读取约束：让任何一次工具调用都不可能把大块内容放进上下文"
+readme = "README.md"
+requires-python = ">=3.9"
+# 运行时零依赖：只用标准库，保证“复制到目标项目即可用”的投放模型成立。
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.32",
+    "ruff>=0.15.0",
+    "pytest>=8.0",
+]
+# 可选的 tree-sitter 后端依赖。装上后 test_backends.py 的“真实语法自检”部分才会跑。
+#   uv sync --group treesitter
+treesitter = [
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
+]
+
+[tool.uv]
+# 虚拟项目：ctxguard 靠 install.py 复制散装 .py 投放，不走 wheel 打包，故不构建自身。
+package = false
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = [
+    # E501：本项目大量中文注释/消息按字符计宽天然超 100，强行折行会切碎语义。
+    "E501",
+    # UP031：59 处 %-格式化 是项目一致的写法，改 f-string 收益低、churn 大。
+    "UP031",
+]
+
+[tool.ty.rules]
+import-not-found = "error"
+unresolved-reference = "error"
+
+# tree-sitter 是可选运行时依赖，未安装时这些 import 必然解析不到，属预期。
+[[tool.ty.overrides]]
+include = ["backend_ts.py"]
+[tool.ty.overrides.rules]
+import-not-found = "ignore"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

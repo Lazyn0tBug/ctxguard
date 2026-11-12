@@ -8,6 +8,7 @@
 行为：转发所有消息；对 tools/call 的响应，若文本内容估算超过阈值（CTXGUARD_PROXY_TOK，默认 6000 tokens），
 写入 .ctxindex/stash/，返回“已转存 + 目录 + 如何分段读”，原文不进入上下文，也就不会有“逐块读完”的诱导。
 """
+import contextlib
 import json
 import os
 import re
@@ -46,10 +47,8 @@ def stash(tool, result):
     if tok <= THRESH:
         return result
     body = total
-    try:
+    with contextlib.suppress(Exception):
         body = json.dumps(json.loads(total), ensure_ascii=False, indent=1)
-    except Exception:
-        pass
     os.makedirs(STASH, exist_ok=True)
     gi = os.path.join(ROOT, lib.INDEX_DIR, ".gitignore")
     if not os.path.exists(gi):
@@ -78,6 +77,10 @@ def main():
     cmd = sys.argv[sys.argv.index("--") + 1:]
     _cleanup()
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc_in, proc_out = proc.stdin, proc.stdout
+    if proc_in is None or proc_out is None:   # 管道必然创建成功，除非被外部改写
+        sys.stderr.write("proxy: 无法创建子进程管道\n")
+        sys.exit(2)
     pending = {}
 
     def pump_in():
@@ -89,19 +92,17 @@ def main():
                         pending[m["id"]] = (m.get("params") or {}).get("name", "tool")
                 except Exception:
                     pass
-                proc.stdin.write(line)
-                proc.stdin.flush()
+                proc_in.write(line)
+                proc_in.flush()
         except (BrokenPipeError, OSError):
             pass
         finally:
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                proc_in.close()
 
     threading.Thread(target=pump_in, daemon=True).start()
     out = sys.stdout.buffer
-    for line in proc.stdout:
+    for line in proc_out:
         try:
             m = json.loads(line)
             if isinstance(m, dict) and m.get("id") in pending and isinstance(m.get("result"), dict):

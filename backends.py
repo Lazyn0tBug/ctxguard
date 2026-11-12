@@ -21,12 +21,11 @@ import importlib
 import importlib.util
 import json
 import os
-import sys
 import time
 
 BUILTIN = {"pyast": "backend_pyast", "treesitter": "backend_ts"}
 AUTO = ["treesitter", "pyast"]
-LOG_PATH = None            # 由 tools.load_config 设置
+LOG_PATH: str | None = None   # 由 tools.load_config 设置
 MIN_EMPTY_FALLBACK_LINES = 60   # 后端返回空列表且文件不小于此行数时，视为“没认出来”，回退启发式
 
 _cache = {}
@@ -95,6 +94,8 @@ def load(name):
         elif name.startswith("plugin:"):
             path = os.path.abspath(os.path.expanduser(name[7:]))
             spec = importlib.util.spec_from_file_location("ctxguard_plugin_%x" % (hash(path) & 0xFFFFFF), path)
+            if spec is None or spec.loader is None:
+                raise ImportError("无法为插件创建模块规格：%s" % path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
         else:

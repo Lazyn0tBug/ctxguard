@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.benchmarks/
+# ctxguard 自己在目标项目里建的索引目录
+.ctxindex/
+# 测试运行时生成的假 MCP 服务（已改为写入临时目录，此处兜底）
+tests/fake_mcp.py
