@@ -145,5 +145,6 @@ uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语
 | 文档 | 读者 | 内容 |
 |---|---|---|
 | 本文件 | 使用者 | 是什么、怎么装、怎么调、已知边界 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 使用者 | 按症状排障：hook 不生效、目录切不对、search 不全、配置不生效、MCP 连不上 |
 | [`docs/rust-migration.md`](docs/rust-migration.md) | 实现者 | 渐进迁移到 Rust 的切片划分、接口契约、迁移顺序与验收标准 |
 
