@@ -60,7 +60,7 @@ def stash(tool, result):
         f.write(body)
     rel = os.path.relpath(p, ROOT).replace(os.sep, "/")
     rows = lib.chunks_for(ROOT, p)
-    nlines = rows[-1][1] if rows else body.count("\n") + 1
+    nlines = rows[-1].e if rows else body.count("\n") + 1
     msg = (f"[ctxguard] 工具 {tool} 返回内容约 {tok} tokens，已转存为 {rel}（{nlines} 行），未放入上下文。"
            "不要整份读取，也不要“逐块读完”：先看下面的目录，只读与任务相关的段"
            "（read(path,start,end) 或 Read(offset,limit)），或 search(pattern, path) 定位。\n"

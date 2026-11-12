@@ -197,15 +197,17 @@ def t_tree(root, path=".", depth=2, maxrows=100):
     refresh(root)
     prefix = "" if rel in (".", "") else rel.rstrip("/") + "/"
     con = open_db(root)
-    rows = con.execute("SELECT path,kind,tok,nchunks FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path",
-                       (like_escape(prefix) + "%",)).fetchall()
+    rows = [lib.TreeRow(*r) for r in
+            con.execute("SELECT path,kind,tok,nchunks FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path",
+                        (like_escape(prefix) + "%",)).fetchall()]
     con.close()
     if not rows:
         return f"(没有已索引的文件：{rel})"
     d = max(1, int(depth or 2))
     while True:
         ents = {}
-        for p, kind, tok, nch in rows:
+        for r in rows:
+            p, kind, tok, nch = r.path, r.kind, r.tok, r.nchunks
             parts = p.removeprefix(prefix).split("/")
             if len(parts) > d:
                 key, isdir = "/".join(parts[:d]) + "/", True
@@ -218,7 +220,7 @@ def t_tree(root, path=".", depth=2, maxrows=100):
             break
         d -= 1
     items = sorted(ents.items(), key=lambda kv: (not kv[1][0], kv[0]))
-    total_tok = sum(r[2] for r in rows)
+    total_tok = sum(r.tok for r in rows)
     out = [f"{rel if prefix else '.'}/ | {len(rows)} 个文件 | ~{total_tok}tok（展开层级={d}）"]
     for key, (isdir, n, tok, kind, nch) in items[:maxrows]:
         if isdir:
@@ -249,7 +251,7 @@ def t_outline(root, path):
         ab, rel = v, os.path.relpath(v, root).replace(os.sep, "/")
     rows = chunks_for(root, ab)
     ttok = file_tokens(ab)
-    nl = rows[-1][1] if rows else 0
+    nl = rows[-1].e if rows else 0
     out = ([note] if note else []) + [f"{rel} | {nl} 行 | ~{ttok}tok | {len(rows)} 段"]
     if ttok <= lib.MAX_READ_TOK:
         out.append("（文件较小，可以直接 read 整份）")
@@ -287,7 +289,7 @@ def t_read(root, path, start=None, end=None):
     seg = lines[s - 1:e]
     tok = lines_tokens(seg)
     if tok > lib.MAX_READ_TOK:
-        rows = [r for r in chunks_for(root, ab) if r[1] >= s and r[0] <= e]
+        rows = [r for r in chunks_for(root, ab) if r.e >= s and r.s <= e]
         return (f"REFUSED: 区间 {s}-{e}（约 {tok}tok）超过单次上限 {lib.MAX_READ_TOK}tok。"
                 f"请缩小区间，或按下面的段分别读取：\n" + outline_text(rows, 40))
     body = "\n".join(
@@ -295,8 +297,8 @@ def t_read(root, path, start=None, end=None):
         for i, ln in enumerate(seg, s))
     foot = ""
     if e < total:
-        nxt = next((r for r in chunks_for(root, ab) if r[0] <= e + 1 <= r[1]), None)
-        foot = (f"\n[未读完：下一段 {e + 1}-{nxt[1]} {nxt[3][:60]}]" if nxt
+        nxt = next((r for r in chunks_for(root, ab) if r.s <= e + 1 <= r.e), None)
+        foot = (f"\n[未读完：下一段 {e + 1}-{nxt.e} {nxt.title[:60]}]" if nxt
                 else f"\n[未读完：下一步 read(start={e + 1})]")
     return f"[{rel} 行 {s}-{e} / 共 {total} 行 | ~{tok}tok]\n{body}{foot}"
 
@@ -306,7 +308,7 @@ def _hit_chunks(root, full, hl, top=4):
     rows = chunks_for(root, full)
     if not rows:
         return ""
-    starts = [r[0] for r in rows]
+    starts = [c.s for c in rows]
     cnt = {}
     for ln, _ in hl:
         k = bisect.bisect_right(starts, ln) - 1
@@ -314,7 +316,7 @@ def _hit_chunks(root, full, hl, top=4):
             cnt[k] = cnt.get(k, 0) + 1
     items = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
     items.sort()
-    return "; ".join(f"{rows[k][0]}-{rows[k][1]} {rows[k][3][:50]}({n})" for k, n in items)
+    return "; ".join(f"{rows[k].s}-{rows[k].e} {rows[k].title[:50]}({n})" for k, n in items)
 
 
 def t_search(root, pattern, path=".", mode="auto", limit=40, glob=None):

@@ -171,9 +171,9 @@ def compare(root, path, backend=None):
     for label, bn in (("启发式", []), ("后端", names)):
         ch = outline(bn)
         out.append("")
-        out.append("[%s] 目录：%d 段，最大 %d tok" % (label, len(ch), max((c["tok"] for c in ch), default=0)))
+        out.append("[%s] 目录：%d 段，最大 %d tok" % (label, len(ch), max((c.tok for c in ch), default=0)))
         for c in ch[:30]:
-            out.append("  %d-%d | ~%dtok | %s" % (c["s"], c["e"], c["tok"], c["title"][:90]))
+            out.append("  %d-%d | ~%dtok | %s" % (c.s, c.e, c.tok, c.title[:90]))
         if len(ch) > 30:
             out.append("  …… 另有 %d 段" % (len(ch) - 30))
     return "\n".join(out)

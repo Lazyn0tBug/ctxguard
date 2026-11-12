@@ -59,10 +59,10 @@ def covers(text, ch):
     if not ch:
         return n == 0
     pos = 1
-    for c in sorted(ch, key=lambda c: c["s"]):
-        if c["s"] != pos or c["e"] < c["s"]:
+    for c in sorted(ch, key=lambda c: c.s):
+        if c.s != pos or c.e < c.s:
             return False
-        pos = c["e"] + 1
+        pos = c.e + 1
     return pos == n + 1
 
 
@@ -133,14 +133,14 @@ check("pyast: 嵌套类成员层级正确",
 check("pyast: 语法错误返回 None（回退启发式）", backend_pyast.declarations("def broken(:\n  pass\n", ".py", {}) is None)
 
 ch = chunks(SAMPLE, ".py", ["pyast"], chunk_lines=8)
-check("接入分块器：区间不重叠且完整覆盖", covers(SAMPLE, ch), [(c["s"], c["e"]) for c in ch])
-check("接入分块器：标题里没有伪声明", not any("fake" in c["title"] or "NotAClass" in c["title"] for c in ch), [c["title"] for c in ch])
-dec_chunk = next((c for c in ch if "decorated" in c["title"]), None)
+check("接入分块器：区间不重叠且完整覆盖", covers(SAMPLE, ch), [(c.s, c.e) for c in ch])
+check("接入分块器：标题里没有伪声明", not any("fake" in c.title or "NotAClass" in c.title for c in ch), [c.title for c in ch])
+dec_chunk = next((c for c in ch if "decorated" in c.title), None)
 check("接入分块器：装饰器所在行与函数在同一段",
-      dec_chunk is not None and dec_chunk["s"] <= SAMPLE.split("\n").index("@decorator(") + 1 <= dec_chunk["e"], dec_chunk)
+      dec_chunk is not None and dec_chunk.s <= SAMPLE.split("\n").index("@decorator(") + 1 <= dec_chunk.e, dec_chunk)
 check("接入分块器：声明之间的顶层代码单独成段（(其他代码)）",
-      any("TOP = 1" in "\n".join(lines[c["s"] - 1:c["e"]]) and "其他代码" in c["title"] for c in chunks(SAMPLE, ".py", ["pyast"], chunk_lines=5)),
-      [(c["s"], c["e"], c["title"]) for c in chunks(SAMPLE, ".py", ["pyast"], chunk_lines=5)])
+      any("TOP = 1" in "\n".join(lines[c.s - 1:c.e]) and "其他代码" in c.title for c in chunks(SAMPLE, ".py", ["pyast"], chunk_lines=5)),
+      [(c.s, c.e, c.title) for c in chunks(SAMPLE, ".py", ["pyast"], chunk_lines=5)])
 
 # ---- 不变量：任意真实文件，开/关后端，段区间都必须不重叠且完整覆盖
 real = []
@@ -167,10 +167,10 @@ if os.path.exists(npm_js):
         text_js = f.read()
 else:
     text_js = "\n".join("function f%d() {\n  return %d;\n}\n" % (i, i) for i in range(60))
-base = [(c["s"], c["e"], c["title"]) for c in chunks(text_js, ".js", [])]
+base = [(c.s, c.e, c.title) for c in chunks(text_js, ".js", [])]
 for label, names in (("未知后端名", ["no_such_backend"]), ("后端不支持该扩展名", ["pyast"]),
                      ("treesitter 未装依赖", ["treesitter"])):
-    got = [(c["s"], c["e"], c["title"]) for c in chunks(text_js, ".js", names)]
+    got = [(c.s, c.e, c.title) for c in chunks(text_js, ".js", names)]
     check("回退一致：%s" % label, got == base)
 
 tmp = tempfile.mkdtemp()
@@ -191,7 +191,7 @@ for label, body in (
         ("后端返回空列表且文件较大", "NAME='p';VERSION='1'\ndef supports(e): return True\ndef declarations(t,e,o): return []\n"),
         ("缺少必需成员", "NAME='p'\n")):
     write_plugin(body)
-    got = [(c["s"], c["e"], c["title"]) for c in chunks(text_js, ".js", ["plugin:" + plug])]
+    got = [(c.s, c.e, c.title) for c in chunks(text_js, ".js", ["plugin:" + plug])]
     check("回退一致：" + label, got == base)
 
 for label, ret in (("字符串", "'abc'"), ("元素缺字段", "[(1,)]"), ("层级非数字", "[(0,'x','t',None)]")):
@@ -203,7 +203,7 @@ write_plugin("NAME='p';VERSION='1'\ndef supports(e): return e=='.conf'\n"
              "def declarations(t,e,o):\n    return [(i,0,l.strip(),None) for i,l in enumerate(t.split('\\n')) if l.startswith('SECTION')]\n")
 conf = "".join("SECTION alpha%d\n" % i + "k = v\n" * 30 for i in range(5))
 cc = chunks(conf, ".conf", ["plugin:" + plug], chunk_lines=40)
-check("插件：自定义声明生效并进入目录", any("SECTION alpha3" in c["title"] for c in cc) and covers(conf, cc), [c["title"] for c in cc][:6])
+check("插件：自定义声明生效并进入目录", any("SECTION alpha3" in c.title for c in cc) and covers(conf, cc), [c.title for c in cc][:6])
 write_plugin("NAME='p';VERSION='1'\ndef supports(e): return True\ndef declarations(t,e,o): return []\n")
 check("插件：小文件返回空列表被接受（不回退）", backends.get_decls("a\nb\n", ".x", ["plugin:" + plug], {}, 2) == [])
 

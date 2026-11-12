@@ -15,6 +15,47 @@ import sqlite3
 import subprocess
 import sys
 import time
+from typing import NamedTuple
+
+
+class Chunk(NamedTuple):
+    """一段内容。既是内存里的段记录，也是索引库 chunks 表的行——字段顺序与表结构一致。"""
+
+    s: int        # 起始行（1 基）
+    e: int        # 结束行（含）
+    tok: int      # 估算 tokens
+    title: str
+    summary: str
+
+
+class FileRow(NamedTuple):
+    """索引库 files 表的一行。"""
+
+    path: str
+    size: int
+    mtime: float
+    kind: str
+    lines: int
+    tok: int
+    nchunks: int
+
+
+class FileKey(NamedTuple):
+    """增量比对用的最小文件信息。"""
+
+    path: str
+    size: int
+    mtime: float
+
+
+class TreeRow(NamedTuple):
+    """tree 查询要的文件信息。"""
+
+    path: str
+    kind: str
+    tok: int
+    nchunks: int
+
 
 INDEX_DIR = ".ctxindex"
 MAX_CHUNK_LINES = int(os.environ.get("CTXGUARD_CHUNK_LINES", "120"))
@@ -305,8 +346,8 @@ def _finalize(lines, pieces, is_doc):
         a, b = m["a"], m["b"]
         t = m["title"] if m["n"] == 1 else f'{m["title"]} … {m["last"]} (+{m["n"] - 1})'
         summ = summarize_doc(lines, a, b) if is_doc else summarize_code(lines, a, b)
-        res.append({"s": a + 1, "e": b, "title": _clip(t, 160), "summary": _clip(summ, 110),
-                    "tok": est_tokens("\n".join(lines[a:b]))})
+        res.append(Chunk(s=a + 1, e=b, tok=est_tokens("\n".join(lines[a:b])),
+                         title=_clip(t, 160), summary=_clip(summ, 110)))
     return res
 
 
@@ -377,7 +418,7 @@ def doc_pieces(lines, ext):
 
 
 def chunk_text(text, ext):
-    """返回 (lines, chunks, symbols)。chunks: [{s,e,title,summary,tok}]，行号 1 基、闭区间。"""
+    """返回 (lines, chunks, symbols)。chunks 是 [Chunk]，行号 1 基、闭区间。"""
     lines = split_lines(text)
     if not lines:
         return lines, [], []
@@ -495,7 +536,7 @@ def index_one(con, root, rel):
     con.execute("REPLACE INTO files VALUES(?,?,?,?,?,?,?)",
                 (rel, st.st_size, st.st_mtime, kind, nlines, tok, len(chunks)))
     con.executemany("INSERT INTO chunks VALUES(?,?,?,?,?,?,?)",
-                    [(rel, i, c["s"], c["e"], c["tok"], c["title"], c["summary"]) for i, c in enumerate(chunks, 1)])
+                    [(rel, i, c.s, c.e, c.tok, c.title, c.summary) for i, c in enumerate(chunks, 1)])
     con.executemany("INSERT INTO symbols VALUES(?,?,?)", [(rel, ln, nm) for ln, nm in syms])
     return True
 
@@ -505,7 +546,8 @@ def build(root, con=None, time_limit=None, force=False):
     con = con or open_db(root)
     t0 = time.monotonic()
     paths = list_files(root)
-    have = {r[0]: (r[1], r[2]) for r in con.execute("SELECT path,size,mtime FROM files")}
+    have = {k.path: (k.size, k.mtime)
+            for k in (FileKey(*r) for r in con.execute("SELECT path,size,mtime FROM files"))}
     done = changed = 0
     for rel in paths:
         if time_limit and time.monotonic() - t0 > time_limit:
@@ -539,15 +581,17 @@ def ensure_file(con, root, rel):
         st = os.stat(os.path.join(root, rel))
     except OSError:
         return None
-    row = con.execute("SELECT * FROM files WHERE path=?", (rel,)).fetchone()
-    if not row or row[1] != st.st_size or abs(row[2] - st.st_mtime) > 1e-6:
+    raw = con.execute("SELECT * FROM files WHERE path=?", (rel,)).fetchone()
+    row = FileRow(*raw) if raw else None
+    if row is None or row.size != st.st_size or abs(row.mtime - st.st_mtime) > 1e-6:
         index_one(con, root, rel)
-        row = con.execute("SELECT * FROM files WHERE path=?", (rel,)).fetchone()
+        raw = con.execute("SELECT * FROM files WHERE path=?", (rel,)).fetchone()
+        row = FileRow(*raw) if raw else None
     return row
 
 
 def chunks_for(root, abspath):
-    """返回 [(s,e,tok,title,summary)]；优先用索引，失败则现算（文件在项目外也能用）。"""
+    """返回 [Chunk]；优先用索引，失败则现算（文件在项目外也能用）。"""
     try:
         rel = os.path.relpath(abspath, root).replace(os.sep, "/")
         if rel.startswith(".."):
@@ -555,27 +599,28 @@ def chunks_for(root, abspath):
         con = open_db(root)
         ensure_file(con, root, rel)
         con.commit()
-        rows = con.execute("SELECT s,e,tok,title,summary FROM chunks WHERE path=? ORDER BY idx", (rel,)).fetchall()
+        rows = con.execute("SELECT s,e,tok,title,summary FROM chunks WHERE path=? ORDER BY idx",
+                           (rel,)).fetchall()
         con.close()
         if rows:
-            return rows
+            return [Chunk(*r) for r in rows]
     except Exception:
         pass
     try:
         with open(abspath, "rb") as f:
             data = f.read(MAX_INDEX_BYTES)
         _, chunks, _ = chunk_text(data.decode("utf-8", "replace"), os.path.splitext(abspath)[1].lower())
-        return [(c["s"], c["e"], c["tok"], c["title"], c["summary"]) for c in chunks]
+        return list(chunks)
     except Exception:
         return []
 
 
 def outline_text(rows, maxrows=60):
     out = []
-    for s, e, tok, title, summ in rows[:maxrows]:
-        t = title if len(title) <= 90 else title[:89] + "…"
-        extra = f" — {summ[:60]}" if summ and summ[:20] not in t else ""
-        out.append(f"  {s}-{e} | ~{tok}tok | {t}{extra}")
+    for c in rows[:maxrows]:
+        t = c.title if len(c.title) <= 90 else c.title[:89] + "…"
+        extra = f" — {c.summary[:60]}" if c.summary and c.summary[:20] not in t else ""
+        out.append(f"  {c.s}-{c.e} | ~{c.tok}tok | {t}{extra}")
     if len(rows) > maxrows:
         out.append(f"  …… 另有 {len(rows) - maxrows} 段未列出（共 {len(rows)} 段）：先按标题判断需要哪部分，"
                    f"或用 grep/symbols 定位")
@@ -586,7 +631,7 @@ def big_file_message(root, path, what):
     """给被拒绝的大文件生成“目录 + 下一步怎么做”的反馈。"""
     rel = os.path.relpath(path, root) if path.startswith(root) else path
     rows = chunks_for(root, path)
-    total = sum(r[2] for r in rows) if rows else int(os.path.getsize(path) / 3.2)
+    total = sum(c.tok for c in rows) if rows else int(os.path.getsize(path) / 3.2)
     head = (f"[ctxguard] 拒绝：{rel}（约 {total} tokens，{len(rows)} 段）{what}，"
             f"超过单次上限 {MAX_READ_TOK} tokens。不要整份读取。")
     if not rows:
