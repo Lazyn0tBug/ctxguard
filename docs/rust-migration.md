@@ -6,7 +6,7 @@
 
 ## 0. 摘要
 
-ctxguard 由 12 个平铺的 Python 模块组成（3,165 行），靠 `install.py` 复制散装 `.py` 投放，
+ctxguard 由 12 个平铺的 Python 模块组成（3,187 行），靠 `install.py` 复制散装 `.py` 投放，
 由用户机器上的 `python3` 运行。2026-11 这一轮把它改造成 uv + ruff + ty 管理的工程之后，
 暴露出一个根问题：
 
@@ -56,7 +56,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | search（53k 文件仓） | **21.4 s**，而代码里的预算是 15 s | **超时截断**，模型拿到的是残缺结果 |
 | ├ 扫描（读文件 + 正则） | 9.7 s | 语言问题，Rust 能解决 |
 | └ 命中文件 → 查段 | 9.7 s | **实现方式问题**：每个命中文件重开一次 SQLite |
-| 模块规模 | 12 个运行时模块 / 3,165 行 | lib 656、tools 639、backend_ts 403、hook_pre 357、install 315（2026-11-13 实测）|
+| 模块规模 | 12 个运行时模块 / 3,187 行 | lib 656、tools 639、backend_ts 403、hook_pre 357、install 337（2026-11-13 实测）|
 
 ### 1.3 一个与迁移无关、但立刻该修的问题
 
@@ -167,6 +167,7 @@ crates/ctxguard/
 | MCP 协议 | JSON-RPC over stdio，`initialize` / `tools/list` / `tools/call`，5 个工具 |
 | hook 协议 | PreToolUse 拦截 `Read`/`Grep`/`Bash`；拒绝时 exit 2 且 stderr 携带目录；SessionStart 注入目录概览 |
 | 拒绝消息格式 | "拒绝原因 + 目录（起止行 | tokens | 标题 — 摘要）+ 下一步提示"，逐字不变 |
+| 安装/卸载契约 | `.claude/settings.json` 的 hooks 结构、`.mcp.json` 的 mcpServers、`CLAUDE.md` 的标记块、`.gitignore` 条目——**装与卸必须严格互逆，且不碰用户自己写的内容**（由 tests/test_install.py 的往返测试钉住） |
 
 ## 4. 切片定义
 
@@ -247,12 +248,25 @@ crates/ctxguard/
 | 形态 | 库函数 `core::mcp()` / `core::proxy()` + 子命令 `ctxguard mcp` / `ctxguard proxy -- CMD` |
 | 风险 | 低。长驻进程，启动开销无关紧要；**逻辑薄**，迁移收益主要在"少一个 Python 运行时" |
 
+### 切片 G：安装与卸载
+
+| 项 | 内容 |
+|---|---|
+| 职责 | 往目标项目写 `.claude/settings.json` / `.mcp.json` / `CLAUDE.md` / `.gitignore`，以及**撤销这些改动**（`ctxguard install` / `ctxguard uninstall`） |
+| 接口 | `ctxguard install [项目] [--user] [--backend ...] [--wrap <名>]` 与 `ctxguard uninstall [项目] [--user]`；输出与现在的 `install.py` 一致 |
+| 退场条件 | 现有 4 项安装/卸载往返测试（tests/test_install.py）指向新二进制后全绿 |
+| 依赖 | D（要知道五个工具与 MCP 服务的名字） |
+| 风险 | **中**：要精确复刻"合并而不是覆盖"的行为——用户自己的 hook、MCP 服务、CLAUDE.md 内容、.gitignore 规则都必须原样保留。当前 Python 版的语义由 tests/test_install.py 的四项往返测试钉住，Rust 版直接拿它当验收标准 |
+
+与现在的差别只有一处实质：它要读写用户项目里的 JSON/Markdown 文件，
+Rust 侧用 serde_json + 手写文本处理即可，不算难。
+
 ### 4.1 不迁移的部分（明确列出）
 
 | 部分 | 理由 |
 |---|---|
-| `install.py` | 一次性脚本，要改用户的 `settings.json` / `.mcp.json` / `CLAUDE.md`，用 Python 或 shell 最省事。若终局要"零 Python"，可最后用 Rust 重写，但不是必须 |
 | `tools.py` 的配置与注册表 | 数据量小、逻辑薄；注册表在 Rust 里只是一张静态表 |
+| `scripts/`（facts 同步工具） | 开发期工具，不进产物。但**迁移后必须跟着改**：`RUNTIME_MODULES` 从 12 个 Python 模块变成 1 个 Rust crate，文档里的行数/模块数口径全变（见 §6.3） |
 | `server.py` / `proxy.py` 的 JSON-RPC 协议细节 | 长驻进程，无性能诉求；迁移主要是消除 Python 运行时 |
 
 ## 5. 接口契约
@@ -297,10 +311,10 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 | 形态 | 何时用 | 例子 |
 |---|---|---|
 | **薄 CLI**（独立可执行文件） | 迁移期：被 Python 侧调用 | `ctxguard-chunk`、`ctxguard-scan` |
-| **主二进制**（子命令） | 终局：用户与 Claude Code 直接调用 | `ctxguard build tree outline read search symbols doctor compare chunk scan guard mcp proxy` |
+| **主二进制**（子命令） | 终局：用户与 Claude Code 直接调用 | `ctxguard build tree outline read search symbols doctor compare chunk scan guard mcp proxy install uninstall` |
 
 主二进制的子命令表面**保持与现有 `index.py` 逐字一致**（子命令名、参数名、默认值、输出格式），
-额外增加 `chunk` / `scan` / `guard` / `mcp` / `proxy`。**这是"145 项黑盒测试可以原样指向
+额外增加 `chunk` / `scan` / `guard` / `mcp` / `proxy` / `install` / `uninstall`。**这是"145 项黑盒测试可以原样指向
 新二进制"的前提。**
 
 ## 6. 迁移顺序与验收
@@ -316,7 +330,11 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 | 4 | 切片 D（主 CLI） | 主二进制成形（库 + 子命令）；**145 项黑盒测试改指向二进制后全绿**；CLI 输出逐字一致 |
 | 5 | 切片 F（MCP / 代理） | MCP 五个工具响应一致；代理转存行为一致 |
 | 6 | 切片 E（hook） | Bash/Read/Grep 用例一致；拒绝消息逐字一致 |
-| 7 | Python 侧退役 | 运行时零 Python；`install.py` 简化；README 更新 |
+| 7 | 切片 G（安装与卸载） | 4 项装卸往返测试指向新二进制后全绿；用户自己的配置原样保留 |
+| 8 | Python 侧退役 | 运行时零 Python；`scripts/facts.py` 的口径改成 Rust 工程；README 更新 |
+
+切片 G 放在最后是**切换**动作：迁移期 Python 版 `install.py` 继续装 Python 版工具（切片 A–F
+是它的可选加速件），G 落地后由 `ctxguard install` 装二进制版，Python 版才退役。
 
 ### 6.2 对拍护栏（步骤 0 的产物，必须先有）
 
@@ -334,8 +352,14 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 
 ### 6.3 回归网
 
-现有测试是纯黑盒的（驱动 `index.py` 子进程、跟 MCP 说 JSON-RPC、跟代理对管道），
-**可以原封不动地指向新二进制**。这是本次迁移最大的风险缓冲：
+现在的测试分三类，迁移时处置各不相同：
+
+| 类别 | 位置 | 迁移时怎么处置 |
+|---|---|---|
+| **黑盒脚本套件** | `tests/test_all.py`、`tests/test_backends.py` | **原封不动地指向新二进制**——驱动子进程、跟 MCP 说 JSON-RPC、跟代理对管道，与实现语言无关。这是本次迁移最大的风险缓冲 |
+| **装卸往返** | `tests/test_install.py` | 指向新二进制的 `install` / `uninstall`，作为**切片 G 的验收标准** |
+| **注册表自检** | `tests/test_registry.py` | 随实现语言迁移：现在盯的是 Python 的 `tools.TOOLS`，Rust 版要写等价的（盯 Rust 侧的注册表） |
+| **文档闸门** | `tests/test_facts.py` | 留在 Python（开发期工具），但**迁移后必须跟着改**：`scripts/facts.py` 的 `RUNTIME_MODULES` 从 12 个 Python 模块变成 1 个 Rust crate，文档里的行数/模块数口径全变 |
 
 > 迁移不是"重写后再想办法测"，而是"保持测试不变，换掉被测对象"。
 
@@ -441,7 +465,9 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
 ### 10.2 终局
 
 全部迁完后：
-- `install.py` 变成"复制一个二进制 + 写配置"
+- `ctxguard install` / `ctxguard uninstall` 取代 `install.py`：前者"复制一个二进制 + 写配置"，
+  后者把前者做的事原样撤回
+- `install.py` 退役（过渡期保留，Python 版工具仍靠它安装）
 - Python 版本下限、解释器探测、导入失败 fail-open 那一整套**全部删除**
 - hook 命令变成 `ctxguard guard`，MCP 命令变成 `ctxguard mcp`
 
@@ -480,6 +506,7 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 | D11 | 暂不做 OS 绑定：多平台产物是 future，当前只保证开发机可跑 |
 | D12 | 拒绝消息的渲染放进 Rust **库**——薄 CLI 与主二进制共用同一份格式定义 |
 | D13 | 依赖策略：有成熟的同类 crate 就用，没有才手写；单 crate 单 lib（切片是模块，不是独立 crate），集成时只重新封装上层，库不动 |
+| D14 | **安装与卸载一并迁到 Rust**（新增切片 G，排在迁移顺序最后）。原判"install.py 留在 Python 最省事"是错的：卸载是同一个安装的另一半，终局用户手里是二进制，卸载却要跑 Python 脚本，"用户机器不需要 Python"就落不了地 |
 
 ### 待定
 

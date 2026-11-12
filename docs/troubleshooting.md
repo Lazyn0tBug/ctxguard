@@ -203,7 +203,27 @@ python3 .claude/ctxguard/index.py search 'pattern' --glob '*.py' # 缩到文件�
 - **子 agent 的读取不计入**（那里正是"读很多"的指定场所），依赖 hook 输入里的 `agent_id` 字段
 - 调大：`.ctxguard.json` 的 `session_budget`，或设 `0` 关闭
 
-### 2.8 MCP 服务连不上
+### 2.8 卸载
+
+```bash
+python3 install.py --uninstall <项目>       # 撤掉项目级安装
+python3 install.py --user --uninstall       # 撤掉用户级安装（只影响 ~/.claude）
+```
+
+卸载的语义是"**回到安装之前**"——你自己的东西一律不动：
+
+| 会被撤掉 | 会原样保留 |
+|---|---|
+| `.claude/settings.json` 里的 ctxguard hook 与 deny 规则 | 你自己的 hook 与 deny 规则 |
+| `.mcp.json` 里的 ctxguard 条目 | 你自己的 MCP 服务 |
+| 被 `--wrap` 套过代理的服务的代理层（还原成原来的 command/args） | 服务的原始配置 |
+| `CLAUDE.md` 里的"读取纪律"段 | 你自己写的其它内容 |
+| `.gitignore` 里的 `.ctxindex/`、`.claude/ctxguard/__pycache__/` | 你自己的忽略规则 |
+| `.claude/ctxguard/` 与 `.ctxindex/` 目录 | 别的全部 |
+
+安装器建的 `.gitignore`（项目原本没有、装完只有那两条）在卸载后会被删掉，不留空文件。
+
+### 2.9 MCP 服务连不上
 
 ```bash
 python3 .claude/ctxguard/server.py          # 手动起，应该安静地等 stdin
@@ -214,7 +234,7 @@ python3 .claude/ctxguard/server.py          # 手动起，应该安静地等 std
 - 服务端只在 stdout 写 JSON-RPC，**任何多余输出都会破坏协议**——所以它的输出要全部走
   `send()`，不要 print
 
-### 2.9 代理没套上 / 没转存
+### 2.10 代理没套上 / 没转存
 
 ```bash
 python3 install.py <项目> --wrap <.mcp.json 里的服务名>

@@ -132,16 +132,37 @@ def remove_block(path):
             os.remove(path)
 
 
+GITIGNORE_ENTRIES = (".ctxindex/", ".claude/ctxguard/__pycache__/")
+
+
 def add_gitignore(root):
     p = os.path.join(root, ".gitignore")
     cur = ""
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
             cur = f.read()
-    add = [x for x in (".ctxindex/", ".claude/ctxguard/__pycache__/") if x not in cur]
+    add = [x for x in GITIGNORE_ENTRIES if x not in cur]
     if add:
         with open(p, "a", encoding="utf-8") as f:
             f.write(("" if cur.endswith("\n") or not cur else "\n") + "\n".join(add) + "\n")
+
+
+def remove_gitignore(root):
+    """撤回安装时加的忽略规则。文件原本不存在、现在空了，就把它删掉。"""
+    p = os.path.join(root, ".gitignore")
+    if not os.path.exists(p):
+        return
+    with open(p, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    kept = [ln for ln in lines if ln.strip() not in GITIGNORE_ENTRIES]
+    if len(kept) == len(lines):
+        return
+    body = "\n".join(kept).strip("\n")
+    if body:
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(body + "\n")
+    else:
+        os.remove(p)      # 原本没有 .gitignore，是安装时建的——卸干净
 
 
 def read_min_python():
@@ -244,9 +265,10 @@ def main():
                 m.pop("mcpServers", None)
             save_json(mpath, m) if m else os.remove(mpath)
         remove_block(os.path.join(root, "CLAUDE.md"))
+        remove_gitignore(root)
         shutil.rmtree(dest, ignore_errors=True)
         shutil.rmtree(os.path.join(root, ".ctxindex"), ignore_errors=True)
-        print("已卸载（settings 里其他配置保持不变）。")
+        print("已卸载（settings、.mcp.json、CLAUDE.md、.gitignore 里属于 ctxguard 的部分都已撤回）。")
         return
 
     py, pyver = find_python(min_py)
