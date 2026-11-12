@@ -94,18 +94,22 @@ python3 .claude/ctxguard/index.py compare <文件>    # 启发式 vs 后端 的�
 
 也可写在 `.ctxguard.json`：`{"backends": ["treesitter", "pyast"], "backend_options": {"descend_functions": false}}`。
 项目级配置只接受内置后端名；自定义插件（`plugin:/绝对路径.py`）只接受 `~/.ctxguard.json` 或环境变量 `CTXGUARD_BACKENDS`。
-后端、版本、依赖版本或选项变化时，旧索引自动作废并重建。完整设计、接口契约与调试指南见设计文档。
+后端、版本、依赖版本或选项变化时，旧索引自动作废并重建。
+
+**切分点不对怎么查**：`doctor` 逐语言跑一遍后端自检（后端加载失败、真实语法节点名对不上
+都会在这里暴露）；`compare <文件>` 并排显示“启发式”与“后端”两套目录，标出只在其中一边
+出现的声明——先看它分在哪一层（是层级判错，还是把字符串里的伪声明当真了）。
 
 **注意**：tree-sitter 后端只用假节点测过，真实语法包的节点名需要在目标机器上用 `doctor` 核对（只改 `backend_ts.py` 的 `SPECS` 表）。
 
 ## 测试
 
-两支脚本测试（83 项端到端 + 54 项后端）也可以直接跑：
+两支脚本测试（86 项端到端 + 58 项后端）也可以直接跑：
 
 ```bash
 python3 tests/gen_sample.py /tmp/sample && (cd /tmp/sample && git add -A)
-python3 tests/test_all.py "$(pwd)" /tmp/sample      # 83 项：索引、hook、预算、MCP、代理
-python3 tests/test_backends.py "$(pwd)"             # 54 项 + 装了 tree-sitter 后追加的真实语法自检
+python3 tests/test_all.py "$(pwd)" /tmp/sample      # 86 项：索引、hook、预算、MCP、代理
+python3 tests/test_backends.py "$(pwd)"             # 58 项 + 装了 tree-sitter 后追加的真实语法自检
 ```
 
 ## 开发（uv + ruff + ty）
@@ -118,14 +122,14 @@ python3 tests/test_backends.py "$(pwd)"             # 54 项 + 装了 tree-sitte
 uv sync                          # 建 .venv（Python 3.13），装 ruff / ty / pytest
 uv run ruff check .              # 静态检查：E,F,W,I,N,UP,B,SIM
 uv run ty check .                # 类型检查
-uv run pytest                    # 自动造样例仓库并跑完 137 项检查
+uv run pytest                    # 自动造样例仓库并跑完 144 项检查
 uv run pytest -q                 # 同上，静默模式
 uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语法自检也跑起来
 ```
 
 **渐进迁移到 Rust**：把 ctxguard 按职责切成若干独立切片、逐片迁到 Rust 的设计——
 切分方式、接口契约、迁移顺序、对拍护栏与验收标准，见
-[`docs/rust-migration.md`](docs/rust-migration.md)。
+[`docs/rust-migration.md`](docs/rust-migration.md)。**这份是给实现者看的**，不是使用说明。
 
 **工具注册表**：`tools.py` 末尾的 `TOOLS` 是 `tree / outline / read / search / symbols` 的唯一
 声明处——CLI 子命令（`index.py`）和 MCP 工具列表（`server.py`）都从它生成，参数与协议 schema
@@ -135,4 +139,11 @@ uv sync --group treesitter       # 额外装 tree-sitter，让后端的真实语
 
 - `E501`（行宽）：中文注释按字符计宽天然超 100，强行折行会切碎语义。
 - `UP031`（`%` 格式化）：项目一致使用，改 f-string 收益低、churn 大。
+
+## 文档
+
+| 文档 | 读者 | 内容 |
+|---|---|---|
+| 本文件 | 使用者 | 是什么、怎么装、怎么调、已知边界 |
+| [`docs/rust-migration.md`](docs/rust-migration.md) | 实现者 | 渐进迁移到 Rust 的切片划分、接口契约、迁移顺序与验收标准 |
 
