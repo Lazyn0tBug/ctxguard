@@ -61,6 +61,15 @@ echo '{"tool_name":"Bash","tool_input":{"command":"cat big.txt"},"cwd":"'$PWD'"}
 4. **装的是用户级而不是项目级**（或反之）。用户级安装只写 `~/.claude/settings.json`，
    项目级的 MCP 与 CLAUDE.md 规则不生效
 
+**装的时候就失败**（还没进会话）：
+
+```
+错误：安装器需要 Python 3.11+（缺 tomllib）。当前 3.9.6；请用 python3.13 运行本安装器。
+```
+
+安装器用 `tomllib` 读 `pyproject.toml`，所以它自己最低要 3.11。3.11 / 3.12 可以跑
+（它会自己去 PATH 上探测一个 3.13+ 的解释器来装工具），3.9 不行 → 换 `python3.13 install.py ...`。
+
 ### 2.2 大文件没有被拦
 
 1. **路径在 `allow` 里**。查 `.ctxguard.json` 的 `allow`（glob，相对项目根），命中就整份放行

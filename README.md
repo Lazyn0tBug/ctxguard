@@ -20,8 +20,15 @@ python3 install.py /path/to/project --wrap <mcp名>   # 给第三方 MCP 套上�
 不能假设目标机器的 `python3` 够新，很多 macOS 自带的仍是 3.9。找不到达标解释器时安装器
 直接报错退出，不会留下一个跑不起来的 hook。
 
-安装器自身刻意保持老 Python 可运行：你可以用 `python3.9 install.py ...` 装出一套用
-3.13 跑的工具。
+**安装器自身需要 Python 3.11+**（它用 `tomllib` 读 `pyproject.toml`）。在 3.9 上直接运行
+安装器会得到一句明确提示：
+
+```
+错误：安装器需要 Python 3.11+（缺 tomllib）。当前 3.9.6；请用 python3.13 运行本安装器。
+```
+
+也就是说：安装器可以用 3.11 / 3.12 跑（它会去 PATH 上探测一个 3.13+ 的解释器来装工具），
+但不能用 3.9 跑。
 
 安装后重启 Claude Code，用 `/hooks` 和 `/mcp` 确认。安装器是幂等的，会合并而不是覆盖你已有的
 `.claude/settings.json`、`.mcp.json`、`CLAUDE.md`。
