@@ -27,7 +27,7 @@ RUNTIME_MODULES = [
     "server.py", "proxy.py", "index.py", "backend_pyast.py", "hook_session.py", "install.py",
 ]
 DEPLOYED = [m for m in RUNTIME_MODULES if m != "install.py"]
-DOCS = ["README.md", "docs/rust-migration.md", "docs/troubleshooting.md"]
+DOCS = ["README.md", "docs/rust-migration.md", "docs/troubleshooting.md", "docs/future.md"]
 
 
 def _lines(path):
@@ -74,22 +74,16 @@ def test_counts():
 # (文件, 正则（含一个数字组）, 事实名, 应当命中的次数, 数字的写法)
 # 写法 "int" = 原样，"comma" = 千分位。
 RULES = [
+    ("docs/rust-migration.md", r"现有 (\d+) 项检查构成回归基线", "tests_total", 1, "int"),
+    ("docs/rust-migration.md", r"兼容行为\*\*：(\d+) 项现有检查", "tests_total", 1, "int"),
+    ("docs/rust-migration.md", r"现有 (\d+) 项检查需先适配", "tests_total", 1, "int"),
     ("README.md", r"两支脚本测试（(\d+) 项端到端", "test_all", 1, "int"),
     ("README.md", r"两支脚本测试（\d+ 项端到端 \+ (\d+) 项后端", "test_backends", 1, "int"),
     ("README.md", r"/tmp/sample      # (\d+) 项：索引", "test_all", 1, "int"),
     ("README.md", r"tests/test_backends\.py.*# (\d+) 项 \+ 装了 tree-sitter", "test_backends", 1, "int"),
     ("README.md", r"跑完 (\d+) 项检查", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"现有 (\d+) 项黑盒测试", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"\*\*全部现有行为\*\*：(\d+) 项黑盒测试", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"这样 (\d+) 项黑盒测试可以", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"\| 退场条件 \| (\d+) 项黑盒测试指向", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"\*\*这是\"(\d+) 项黑盒测试可以原样指向", "tests_total", 1, "int"),
     ("docs/rust-migration.md", r"(\d+) 项测试全绿", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"(\d+) 项全绿", "tests_total", 2, "int"),
-    ("docs/rust-migration.md", r"\*\*(\d+) 项黑盒测试改指向二进制后全绿", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"\| 外部行为 \| (\d+) 项黑盒测试", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"对拍护栏 \+ (\d+) 项黑盒测试", "tests_total", 1, "int"),
-    ("docs/rust-migration.md", r"行为不变是硬约束，(\d+) 项黑盒测试是验收标准", "tests_total", 1, "int"),
+    ("docs/rust-migration.md", r"(\d+) 项全绿", "tests_total", 1, "int"),
     ("docs/rust-migration.md", r"由 (\d+) 个平铺的 Python 模块组成", "modules", 1, "int"),
     ("docs/rust-migration.md", r"\| 模块规模 \| (\d+) 个运行时模块", "modules", 1, "int"),
     ("docs/rust-migration.md", r"保持不变（(\d+) 个平铺模块", "modules", 1, "int"),

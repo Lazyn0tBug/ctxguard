@@ -1,6 +1,6 @@
  ctxguard：索引优先的读取约束（语言无关，零依赖）
 
-目标：**让任何一次工具调用都不可能把大块内容放进 Claude Code 的上下文**，而不是事后截断。
+目标：**在受控工具入口限制大块内容进入 Claude Code 的上下文**，并引导模型按索引下钻，而不是事后截断。
 做法是取消“读任意内容”的能力，只保留“按索引下钻”的能力：`目录 → 段 → 行`。
 
 需要 Python 3.13+（标准库），不需要向量库、不需要联网、不需要解析器。
@@ -43,6 +43,28 @@ python3 install.py /path/to/project --wrap <mcp名>   # 给第三方 MCP 套上�
 
 另有：`ctxguard` MCP 服务（`tree / outline / read / search / symbols`，没有“读全文”入口）、
 SessionStart 注入目录概览、主线程**累计读取预算**（防止“分块读完整份”）、CLAUDE.md 规则（约束回显）。
+
+## 设计思路
+
+上下文是一份有限预算。ctxguard 先让模型知道材料在哪里、有什么结构，再读取完成任务所需的段落；
+搜索返回定位线索，目录提供下钻路径，读取才交付受预算约束的正文。拒绝一次大读取时，直接给出目录和下一步，
+使模型能继续工作。结构索引不依赖向量服务，也不把整库正文预先塞进上下文。
+
+职责分为三层：文件范围与读取策略决定“能查什么”，搜索引擎决定“哪里命中”，
+ctxguard 把命中映射到段，并控制返回内容。SQLite 保存文件、段与符号，搜索加速索引则是另一种职责，按实际需要引入。
+hook 拦截常见读取入口，MCP 提供导航式工具，代理处理第三方大载荷；Bash 绕过与 fail-open 等边界见下文。
+
+**实现现状与迁移方向**：当前可用版本仍是 Python；Rust 迁移是设计，尚未实现。
+终局采用一个 Rust crate、共享库和一个主二进制，CLI、hook、MCP 与代理调用同一份逻辑，消除用户端 Python 依赖。
+迁移期间保留 Python 实现与回退能力，通过对拍后逐步切换，最终统一退役 Python 运行时代码。
+
+**搜索已选方案（待实现）**：内嵌 ripgrep 的 `grep-searcher` / `grep-matcher` / `grep-pcre2` 组件，
+用户查询固定使用 PCRE2；不要求用户另外安装 `rg`。文件范围、命中到段的映射、结果排序与输出预算继续由 ctxguard 管理。
+PCRE2 与 Python `re` 的差异通过专门的兼容用例记录，不以“换引擎”暗示完全等价。
+分块器内部的固定正则仍按迁移设计使用 Rust `regex`，与用户查询引擎分开。
+
+本轮不接入 tgrep 或 fff。大仓库 trigram 加速、常驻检索与文件模糊发现需要先用实际工作负载验证收益。
+实现契约见 [Rust 迁移设计](docs/rust-migration.md)，待实现清单及后续候选见 [Future](docs/future.md)。
 
 ## 语言无关是怎么做到的
 
@@ -161,4 +183,5 @@ uv run python scripts/update_facts.py --check   # 只校验：数字过期或链
 | 本文件 | 使用者 | 是什么、怎么装、怎么调、已知边界 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 使用者 | 按症状排障：hook 不生效、目录切不对、search 不全、配置不生效、MCP 连不上 |
 | [`docs/rust-migration.md`](docs/rust-migration.md) | 实现者 | 渐进迁移到 Rust 的切片划分、接口契约、迁移顺序与验收标准 |
+| [`docs/future.md`](docs/future.md) | 开发者 | 待实现清单、后续候选及启动条件 |
 

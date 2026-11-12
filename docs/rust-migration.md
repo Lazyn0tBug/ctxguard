@@ -1,8 +1,9 @@
 # ctxguard 的渐进式 Rust 迁移设计
 
-> 状态：设计稿，待评审。目标读者：实现者。
+> 状态：已确定迁移方向与搜索选型，尚未实现。更新：2026-11-13。目标读者：实现者。
+> 待实现工作与后续候选集中记录在 [Future](future.md)；本文定义实现必须满足的契约。
 > 本文档描述"把 ctxguard 逐步迁到 Rust"的切分方式、接口契约、迁移顺序与验收标准。
-> **行为不变是硬约束**：现有 145 项黑盒测试是迁移的验收标准，实现对它们负责。
+> **兼容行为是硬约束**：现有 145 项检查构成回归基线；改造测试驱动并移植内部测试，已接受的行为变化须单独记录。
 
 ## 0. 摘要
 
@@ -19,7 +20,7 @@ ctxguard 由 12 个平铺的 Python 模块组成（3,187 行），靠 `install.p
 **终局**：一个 Rust 二进制，承载全部功能（CLI / MCP / hook / 代理），
 Python 依赖彻底消失。
 
-**路径**：按职责切成 6 个切片，逐片迁移。每片做成**库函数 + 薄 CLI**——库承载逻辑，
+**路径**：按职责切成 A–G 七个切片，逐片迁移。每片做成**库函数 + 薄 CLI**——库承载逻辑，
 薄 CLI 只做参数解析与序列化；Python 侧探测到薄 CLI 就用、探测不到就走原实现兜底，
 直到该片的 Python 实现退役。终局时主二进制把这些子命令整合进去，逻辑仍是同一份。
 
@@ -41,12 +42,15 @@ hook 命令是 `python3 <dest>/hook_pre.py`，不建 venv、不装包。这保�
 | 用户 python3 版本过旧 | `requires-python = ">=3.13"` + `install.py` 探测解释器 | 探测逻辑 ~50 行；找不到就装不上 |
 | 版本探测不到 | 报错退出，不留坏配置 | 装机失败是硬失败 |
 | 导入期异常 | hook 的 `except Exception: return`（fail-open） | **约束静默失效**，用户毫无察觉 |
-| 坏配置 | `int(cfg["max_read_tok"])` 抛 ValueError | 同上，fail-open 吞掉 |
+| 坏配置 | 项目/用户配置已有逐项校验，退回默认并警告；环境变量仍需核验 | Rust 侧继续显式校验，不能依赖强类型自动处理外部输入 |
 | 类型错误 | 靠 ty + 标注（152 个函数目前只标了约 25 个） | 持续投入；漏标即漏检 |
 
 fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都不拦"**，而不是报错。
 
-### 1.2 量化基线（2026-11 实测，Apple Silicon / Python 3.13.18）
+### 1.2 历史量化基线（2026-11，Apple Silicon / Python 3.13.18）
+
+以下为历史记录，本次评审未复测。搜索分项归因与当前代码存在出入，不能当作当前版本的性能承诺；
+复测须记录提交、命令、语料、冷/热状态、实际搜索文件数与结果完整性。
 
 | 指标 | 数值 | 说明 |
 |---|---|---|
@@ -54,19 +58,17 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 | 索引 433 文件（npm 树） | 0.1 s | 典型小仓 |
 | 索引 53,726 文件（Python 标准库） | **45.8 s**（0.85 ms/文件） | SessionStart 的预算是 25 s，**建不完，靠多会话续建** |
 | search（53k 文件仓） | **21.4 s**，而代码里的预算是 15 s | **超时截断**，模型拿到的是残缺结果 |
-| ├ 扫描（读文件 + 正则） | 9.7 s | 语言问题，Rust 能解决 |
-| └ 命中文件 → 查段 | 9.7 s | **实现方式问题**：每个命中文件重开一次 SQLite |
+| ├ 扫描（读文件 + 正则） | 9.7 s | 历史分项；须重测，不能预先归因于语言 |
+| └ 命中文件 → 查段 | 9.7 s | 历史分项；当前仅为前 30 个排序结果查段，须重新定位成本 |
 | 模块规模 | 12 个运行时模块 / 3,187 行 | lib 656、tools 639、backend_ts 403、hook_pre 357、install 337（2026-11-13 实测）|
 
 ### 1.3 一个与迁移无关、但立刻该修的问题
 
-上表最后一行的 9.7 s：`_hit_chunks()` 对每个命中文件调用 `chunks_for()`，
-而 `chunks_for()` 每次都 `open_db()` → `ensure_file()`（stat + 可能重建索引）→ 查询 → 关闭连接。
-14,000 个命中文件 = 14,000 次开库。
+`_hit_chunks()` 调用 `chunks_for()` 时会重开 SQLite；但当前 `t_search()` 只为排序后的前 30 个文件查段，
+不能推导为“14,000 个命中文件 = 14,000 次开库”。连接复用与批量查询值得验证，收益以重测为准。
 
-**这是纯 Python 就能修的**（复用连接 + 批量查询），与是否迁 Rust 无关。
-迁移前先修掉它，能立刻把 search 从 21.4 s 降到 ~12 s，也让"迁到 Rust 能省一半"这件事
-不再被实现缺陷掩盖。列入 §11 的"迁移前可独立收获"。
+当前 15 s 预算只覆盖扫描循环，不覆盖此前 refresh 与后续查段、渲染。输出已有“超时未搜完”提示，
+但无命中时的“已搜索”计数使用的是总范围数，容易误导。后续应分别记录范围、实际已扫描数量和终止原因。
 
 ## 2. 目标与非目标
 
@@ -76,7 +78,7 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 2. **类型由编译器保证**，不再依赖"记得写标注"来换取静态检查。
 3. **hook / MCP / CLI 共享同一份实现**，消除"三条路径行为不一致"的可能。
 4. **部署退化为"复制一个文件"**，`install.py` 不再需要探测解释器、管理版本下限。
-5. 保持**全部现有行为**：145 项黑盒测试逐条通过。
+5. 保持**约定的兼容行为**：145 项现有检查作为回归基线，测试驱动适配新入口；PCRE2 与后端退役的差异单列验收。
 
 ### 非目标
 
@@ -87,22 +89,19 @@ fail-open 是这里最危险的默认：**工具"坏了"的表现是"什么都�
 
 ## 3. 终局架构
 
-```
-                    ┌─────────────────────────────────────────┐
- Claude Code  ──────┤ ctxguard（单个 Rust 二进制）             │
-   PreToolUse hook  │   guard   读 stdin → 决策 → exit 2      │
-   SessionStart     │   mcp     JSON-RPC over stdio           │──▶ .ctxindex/index.db
-   MCP 客户端       │   proxy   转发 + 转存                    │    （SQLite，schema 不变）
-   你的 shell       │   tree outline read search symbols      │
-                    │   build chunk scan doctor compare       │
-                    └─────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Entry["CLI / hooks / MCP 客户端"] --> Binary["ctxguard 主二进制"]
+    Binary --> Core["共享 Rust 库"]
+    Core --> Index["SQLite 文件、段与符号索引"]
+    Core --> Engine["ripgrep 搜索组件 + PCRE2"]
 ```
 
-- **一个 crate，两种 CLI 形态**（见 §3.2）：`ctxguard-core` 库承载全部逻辑，
+- **一个 crate，两种 CLI 形态**（见 §3.2）：`ctxguard` 库承载全部逻辑，
   薄 CLI 只是"解析参数 → 调库 → 序列化"的适配器。
-- **Python 侧最终只剩**：可能连 `install.py` 都由 Rust 重写（`ctxguard install`）。
+- **运行时 Python 全部退役**：安装与卸载同样由 Rust 实现；开发期脚本可以继续使用 Python。
 - **CLI 表面保持不变**：子命令名、参数名、输出格式与现在的 `index.py` 逐字一致，
-  这样 145 项黑盒测试可以**原样指向新二进制**（见 §6.1）。
+  现有 145 项检查需先适配启动驱动或移植内部断言，再验证新二进制（见 §6.3）。
 
 ### 3.1 lib + 薄 CLI：为什么这么切
 
@@ -134,8 +133,7 @@ crates/ctxguard/
 
 **一个库，不拆多个 crate。** 切片是**模块**（`src/chunk.rs`、`src/scan.rs`……），
 不是独立的 crate——它们不是各自独立发布的产品，共用一个版本号、一套 API、一条发布流水线。
-多 crate 的成本（版本协商、feature 组合爆炸、跨 crate API 演进）在这个规模（总计约
-1,500–2,000 行 Rust）下没有回报。
+多 crate 的版本协商、feature 组合与跨 crate API 演进对当前规模没有足够回报；不预估 Rust 行数作为验收条件。
 
 因此"后期整合"具体就是**只重新封装上层**：
 
@@ -152,7 +150,7 @@ crates/ctxguard/
 （`--features tree-sitter`），避免让 `ctxguard chunk` 这类薄 CLI 也背上它的编译与体积。
 具体选哪个 crate（`tree-sitter` + 语言包绑定）留到实现时定。
 
-### 3.2 与现在相同、必须保持的外部约定
+### 3.2 外部约定与兼容边界
 
 | 约定 | 内容 |
 |---|---|
@@ -162,8 +160,8 @@ crates/ctxguard/
 | token 估算 | ASCII 约 3.6 字符/token，非 ASCII（中日韩）约 1 字符/token |
 | 分块参数 | `MAX_CHUNK_LINES=120`、`MAX_CHUNK_CHARS=6000`、`MIN_CHUNK_LINES=15`、`LINE_CLIP=1000` |
 | 文件类别 | `kind ∈ {code, doc, binary, huge}` |
-| 配置 | 项目 `.ctxguard.json` < 用户 `~/.ctxguard.json`；环境变量 `CTXGUARD_*` |
-| 配置优先级 | 环境变量 > 项目 > 用户 > 默认；`backends` 例外（安全策略见 §8.3） |
+| 配置来源 | 用户 `~/.ctxguard.json`、项目 `.ctxguard.json`、环境变量 `CTXGUARD_*` |
+| 配置优先级 | 目标为环境变量 > 项目 > 用户 > 默认；现有部分数值变量在项目配置之前读取，须先补测试并显式修正；`backends` 安全例外见 §8.3 |
 | MCP 协议 | JSON-RPC over stdio，`initialize` / `tools/list` / `tools/call`，5 个工具 |
 | hook 协议 | PreToolUse 拦截 `Read`/`Grep`/`Bash`；拒绝时 exit 2 且 stderr 携带目录；SessionStart 注入目录概览 |
 | 拒绝消息格式 | "拒绝原因 + 目录（起止行 | tokens | 标题 — 摘要）+ 下一步提示"，逐字不变 |
@@ -171,8 +169,8 @@ crates/ctxguard/
 
 ## 4. 切片定义
 
-每个切片是 **库函数 + 薄 CLI**（§3.2）。迁移期，Python 通过 **stdin/stdout 的 JSON** 调用对应的薄 CLI；
-终局，主二进制把这些子命令整合进去。
+每个切片是 **库函数 + 薄 CLI**（§3.2）。迁移期，分块和扫描等数据接口由 Python 通过 stdin/stdout 调用薄 CLI（扫描用 JSON；分块输入为原始 UTF-8 文本）。
+Rust 模块之间直接调用库函数，不经 JSON 或子进程。终局，主二进制整合这些子命令。
 
 **Python 决定"做什么"，Rust 只负责"怎么做"**——职责边界划在数据上，不在消息上，
 这样跨语言不会产生行为分叉。
@@ -184,7 +182,7 @@ crates/ctxguard/
 | 职责 | 把一份文本切成"带标题与摘要的段"（现在的 `lib.chunk_text` 及其启发式，约 350 行） |
 | 接口 | `ctxguard chunk --ext <ext> [--json]`：stdin = 文件内容，stdout = JSON `[{s,e,tok,title,summary}]` |
 | Python 侧 | `lib.chunk_text` 先 `shutil.which("ctxguard-chunk")` 探测；在则调用并解析 JSON，不在则用现有实现 |
-| 退场条件 | 对拍 100% 一致后，删掉 Python 侧的分块启发式 |
+| 退场条件 | 对拍 100% 一致后可启用；Python 启发式保留至最终切换，以维持 fallback |
 | 依赖 | 无（最底层） |
 | 形态 | 库函数 `core::chunk()` + 薄 CLI `ctxguard-chunk`（迁移期接口） |
 | 风险 | **中**：启发式正则含前瞻，Rust 的 `regex` crate 不支持（见 §8.1） |
@@ -195,23 +193,34 @@ crates/ctxguard/
 |---|---|
 | 职责 | 遍历仓库 → 调 A 切片切段 → 写 SQLite（现在的 `lib.build`/`index_one`/`list_files`/`open_db`） |
 | 接口 | `ctxguard build --root <dir> [--force] [--quiet] [--time-limit SEC]`，行为与现有 `index.py build` 一致 |
-| Python 侧 | `lib.build` 优先调它；不再则走原实现 |
+| Python 侧 | `lib.build` 优先调用兼容版本；不可用则走原实现 |
 | 退场条件 | 索引库内容与 Python 实现逐行一致（§6.2） |
 | 依赖 | A |
 | 形态 | 库函数 `core::build()` + 子命令 `ctxguard build`（与现有 CLI 同名同参） |
 | 风险 | 低（写库逻辑直白）；注意 `git ls-files` 的文件枚举与 `SKIP_DIRS` 剪枝要一致 |
 
-### 切片 C：扫描器
+### 切片 C：搜索引擎适配层（ripgrep + PCRE2）
 
 | 项 | 内容 |
 |---|---|
-| 职责 | 对一批给定文件做正则扫描，产出命中行（现在的 `t_search` 的扫描段） |
-| 接口 | `ctxguard scan --pattern <re> --json`：stdin = JSON `{"files": [...]}`，stdout = JSON `[{"path":..., "lines":[{"n":..,"text":..}]}]` |
-| Python 侧 | `t_search` 负责决定"搜哪些文件"（复用 SQLite 的 `kind`/`size`/glob 规则），把清单交给 Rust 扫描；再把命中映射回段 |
-| 退场条件 | 命中结果与 Python 实现逐条一致 |
-| 依赖 | 无（只吃文件清单，不碰索引） |
-| 形态 | 库函数 `core::scan()` + 薄 CLI `ctxguard-scan`（迁移期接口） |
-| 风险 | 低。**关键设计**：文件清单由 Python 给，Rust 不自己决定搜什么 → 两边搜的文件集必然一致 |
+| 职责 | 复用 ripgrep 搜索组件，对给定文件清单查找匹配；不自行重写通用扫描引擎 |
+| 依赖组件 | `grep-matcher`、`grep-searcher`、`grep-pcre2`；用户查询固定使用 PCRE2，不自动切换 Rust regex 或 fancy-regex |
+| 接口 | 薄 CLI `ctxguard-scan --pattern <re> --json`，stdin 为含 root、files 与预算的请求；响应见 §5.5 |
+| Python 侧 | `t_search` 决定文件清单与兼容参数；Rust 返回结构化命中，Python 映射到段并渲染 |
+| 退场条件 | 兼容用例逐条一致；PCRE2 专有语法与已知差异单独验收；最终切换前保留 Python fallback |
+| 依赖 | 不依赖 SQLite；只搜索调用方提供的文件清单 |
+| 形态 | 库函数 `scan()` + 薄 CLI；主二进制直接调用同一库函数 |
+| 风险 | 中高：Python re/PCRE2 语义差异、Unicode/换行、回溯资源限制、C 依赖链接与结果完整性 |
+
+**职责边界**：ctxguard 决定范围、段映射、排序、输出预算与后续提示；搜索组件负责匹配与读取机制。
+禁止让引擎按自己的默认 ignore/hidden 规则重新筛选清单。引擎的原始输出不直接返回模型。
+先对完整的兼容行做规范化，再仅匹配每行前 2,000 个 Unicode 字符；不能先搜整行、事后丢弃晚于截点的命中，
+否则 `$`、前瞻等语义会变化。`grep-searcher` 的 reader/buffer 与自定义 Sink/Matcher 适配在实现时验证，
+如果不能直接表达上述逐行语义，则在适配层规范化输入并使用 PCRE2 Matcher，不复制通用引擎算法。
+
+**部署**：使用库内嵌，不要求用户安装 `rg` 或 PCRE2 动态库。构建时需要 C 工具链；交付物需验证 PCRE2
+随产物链接且不依赖用户额外安装的运行库。操作系统基础库依赖另行说明；JIT 可用则启用，不可用仍使用 PCRE2。
+具体依赖版本、构建选项及锁定提交在实现时验证并固定，不能只凭 crate 名声称已实现静态部署。
 
 ### 切片 D：主 CLI
 
@@ -220,7 +229,7 @@ crates/ctxguard/
 | 职责 | `tree` / `outline` / `read` / `search` / `symbols` 五个命令（现在的 `tools.py` + `index.py`） |
 | 接口 | 与现有 `index.py` 的子命令**逐字一致**（名字、参数、输出） |
 | Python 侧 | 无（这是终态接口，不是被调用的） |
-| 退场条件 | 145 项黑盒测试指向新二进制后全绿 |
+| 退场条件 | 适配后的行为套件全绿；内部测试移植，已接受差异按契约验收 |
 | 依赖 | A、B、C |
 | 形态 | 库函数 + 主二进制的子命令（`ctxguard tree` 等，参数与输出与现有 `index.py` 逐字一致） |
 | 风险 | 中。工具注册表（现在在 `tools.py` 的 `TOOLS`）在 Rust 里同样是一张静态表——**单源原则照搬** |
@@ -229,9 +238,9 @@ crates/ctxguard/
 
 | 项 | 内容 |
 |---|---|
-| 职责 | Read / Grep / Bash 的放行判断（现在的 `hook_pre.py`，约 360 行） |
+| 职责 | Read / Grep / Bash 放行判断，以及 `hook_session.py` 的启动索引、概览注入和预算重置 |
 | 接口 | `ctxguard guard`：stdin = hook payload，stdout = 决策与消息，exit 0（放行）/ 2（拒绝） |
-| Python 侧 | 无 |
+| Python 侧 | 原 hook 保留到安装入口切换 |
 | 退场条件 | 40 条 Bash 用例 + Read/Grep 用例逐条一致；**且** 拒绝消息逐字一致 |
 | 依赖 | 读 SQLite（渲染目录）→ 依赖 B 的索引格式 |
 | 形态 | 库函数 `core::guard()` + 子命令 `ctxguard guard`（读 stdin → 决策 → exit 0/2） |
@@ -261,13 +270,13 @@ crates/ctxguard/
 与现在的差别只有一处实质：它要读写用户项目里的 JSON/Markdown 文件，
 Rust 侧用 serde_json + 手写文本处理即可，不算难。
 
-### 4.1 不迁移的部分（明确列出）
+### 4.1 数据、协议与开发工具的处置
 
 | 部分 | 理由 |
 |---|---|
-| `tools.py` 的配置与注册表 | 数据量小、逻辑薄；注册表在 Rust 里只是一张静态表 |
+| `tools.py` 的配置与注册表 | 运行时实现迁到 Rust，配置契约与注册表单源原则保留 |
 | `scripts/`（facts 同步工具） | 开发期工具，不进产物。但**迁移后必须跟着改**：`RUNTIME_MODULES` 从 12 个 Python 模块变成 1 个 Rust crate，文档里的行数/模块数口径全变（见 §6.3） |
-| `server.py` / `proxy.py` 的 JSON-RPC 协议细节 | 长驻进程，无性能诉求；迁移主要是消除 Python 运行时 |
+| `server.py` / `proxy.py` 的 JSON-RPC 协议细节 | 协议行为保留，实现随 F 迁到 Rust |
 
 ## 5. 接口契约
 
@@ -311,11 +320,64 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 | 形态 | 何时用 | 例子 |
 |---|---|---|
 | **薄 CLI**（独立可执行文件） | 迁移期：被 Python 侧调用 | `ctxguard-chunk`、`ctxguard-scan` |
-| **主二进制**（子命令） | 终局：用户与 Claude Code 直接调用 | `ctxguard build tree outline read search symbols doctor compare chunk scan guard mcp proxy install uninstall` |
+| **主二进制**（子命令） | 终局：用户与 Claude Code 直接调用 | `ctxguard build tree outline read search symbols doctor compare chunk scan guard session-start mcp proxy install uninstall` |
 
 主二进制的子命令表面**保持与现有 `index.py` 逐字一致**（子命令名、参数名、默认值、输出格式），
-额外增加 `chunk` / `scan` / `guard` / `mcp` / `proxy` / `install` / `uninstall`。**这是"145 项黑盒测试可以原样指向
-新二进制"的前提。**
+额外增加 `chunk` / `scan` / `guard` / `session-start` / `mcp` / `proxy` / `install` / `uninstall`。
+测试需要适配入口；子命令兼容不等于测试脚本无需修改。
+
+### 5.5 搜索契约与已接受的引擎变化
+
+PCRE2 是用户查询的唯一正则引擎；分块器内部固定正则继续采用 §8.1 的 Rust regex 方案。
+选择 PCRE2 不代表承诺完整模拟 Python `re`。公共语法保持命中一致；PCRE2 新支持的语法按 PCRE2 验收。
+模式是否合法以 PCRE2 为准；编译语法错误保留旧版字面量回退策略，但必须显式标明回退，不能悄悄改变解释方式。
+
+| 项目 | 目标行为 |
+|---|---|
+| 大小写 | 保留现有规则：原始 pattern 中出现任意 Unicode 大写字符则敏感，否则不敏感；显式设置 caseless，不直接使用引擎的 smart-case 推断 |
+| 文本 | UTF-8 解码，非法序列替换为 U+FFFD；按现有 `split_lines` 语义逐行，无跨行匹配 |
+| Unicode | 显式启用 UTF/UCP；用中文、组合字符、Unicode 边界与大小写折叠语料对拍，差异登记 |
+| 行截点 | 每行前 2,000 个 Unicode 字符参与匹配，保留原始行文本用于结构化命中；行号为 1 基 |
+| 命中上限 | 每文件最多 300 个命中行；同一行多次匹配仍是一条，达到上限标记为部分结果 |
+| 非法模式 | PCRE2 语法编译失败时转固定字符串匹配，并返回 `effective_mode=literal` 与 `regex_fallback` 警告；正常模式为 `effective_mode=regex`。资源/内存错误不属于语法回退 |
+| 范围 | 目录搜索保留现有 kind/size/path/glob 选择；显式文件的既有例外单独测试；引擎不得自行加默认忽略规则 |
+| 输出 | 现有排序、auto/files/lines 选择及段提示保留；添加完整性提示是本次已接受变化 |
+| 运行错误 | I/O、资源限制、PCRE2 匹配错误均须显式报告；不转字面量、不转其他引擎，也不伪装为无匹配 |
+
+不引入 Python 正则解析器来分类任意模式。Python-only 模式可能触发带警告的字面量回退；
+PCRE2-only 模式可能从旧版字面量变为真正正则。两类行为均纳入引擎差异语料与发布说明，
+公共语法部分继续对拍；“保持行为”不能覆盖这两类已知例外。
+
+扫描响应为单个对象，协议版本固定为 `1`：
+
+```json
+{
+  "version": 1,
+  "engine": "pcre2",
+  "effective_mode": "regex",
+  "warnings": [],
+  "hits": [{"path": "src/main.rs", "lines": [{"n": 12, "text": "fn main() {"}]}],
+  "scope_files": 100,
+  "searched_files": 100,
+  "complete": true,
+  "stop_reasons": [],
+  "errors": []
+}
+```
+
+`searched_files` 仅计完整扫描的文件；跳过、半途终止或达到每文件命中上限的文件不计入。
+`warnings` 包含稳定警告码与诊断信息；字面量回退必须渲染为可见提示。
+`stop_reasons` 可包含 `timeout`、`match_limit`、`io_error`、`match_error`、`resource_limit`，
+`errors` 含 path、稳定错误码与诊断信息。存在任一未完成范围时 `complete=false`；合法的零命中与不完整的零命中必须区分。
+§5.2 的命中形状用于对象内的 `hits`；该 envelope 是新增内部接口，不改变现有 MCP 工具名字。
+
+**资源预算**：一次查询编译一次 pattern，设置 PCRE2 match/depth（及可用的 heap）限制，并保留文件间 deadline。
+文件间计时不能中止一次耗时的匹配，JIT 栈限制也不是总执行时间限制；必须验证所选组件能传递资源限制，
+必要时用底层 PCRE2 绑定补适配。受限后返回明确的部分结果/错误。
+首版不承诺硬墙钟超时；若需要硬超时，则由独立 worker 进程终止执行，此项放入 Future。
+
+依赖依据：[grep-searcher](https://docs.rs/grep-searcher/)、[grep-pcre2](https://docs.rs/grep-pcre2/)、
+[RegexMatcherBuilder](https://docs.rs/grep-pcre2/latest/grep_pcre2/struct.RegexMatcherBuilder.html)。
 
 ## 6. 迁移顺序与验收
 
@@ -323,13 +385,13 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 
 | 步 | 内容 | 验收 |
 |---|---|---|
-| 0 | 对拍护栏（纯 Python，不迁任何东西） | 见 §6.2 |
+| 0 | 测试入口适配、对拍护栏、兼容语料与基线复测 | 保留现有断言；按 §6.2/§6.3 分类，不把内部测试冒充黑盒 |
 | 1 | 切片 A（分块器） | 对拍 100% 一致；现有 145 项测试全绿 |
 | 2 | 切片 B（索引器） | 索引库三表与 Python 实现逐行一致；145 项全绿 |
-| 3 | 切片 C（扫描器）+ 修掉 §1.3 的连接复用问题 | 命中结果逐条一致；search 耗时达标；145 项全绿 |
-| 4 | 切片 D（主 CLI） | 主二进制成形（库 + 子命令）；**145 项黑盒测试改指向二进制后全绿**；CLI 输出逐字一致 |
+| 3 | 切片 C（ripgrep + PCRE2）+ 验证连接复用 | 公共语法命中一致，PCRE2 差异有记录；完整性/资源错误正确；适用套件全绿 |
+| 4 | 切片 D（主 CLI） | 主二进制成形（库 + 子命令）；**适配后的行为套件与移植后的内部测试全绿**；CLI 输出逐字一致 |
 | 5 | 切片 F（MCP / 代理） | MCP 五个工具响应一致；代理转存行为一致 |
-| 6 | 切片 E（hook） | Bash/Read/Grep 用例一致；拒绝消息逐字一致 |
+| 6 | 切片 E（两类 hook） | Bash/Read/Grep 与 SessionStart 用例一致；拒绝消息与预算重置正确 |
 | 7 | 切片 G（安装与卸载） | 4 项装卸往返测试指向新二进制后全绿；用户自己的配置原样保留 |
 | 8 | Python 侧退役 | 运行时零 Python；`scripts/facts.py` 的口径改成 Rust 工程；README 更新 |
 
@@ -345,23 +407,23 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 - **比对对象**（按切片）：
   - A：`chunk` 的 `s` / `e` / `tok` / `title` / `summary` **逐段逐字段**
   - B：`files` / `chunks` / `symbols` 三表**逐行**
-  - C：命中集合（path + 行号 + 文本）**逐条**
+  - C：公共语法的命中集合（path + 行号 + 文本）逐条；PCRE2-only/Python-only、错误与部分结果分别验收
   - D/E：命令输出**逐字节**
 - **差异处理**：任何不一致都要归因到"实现差异"或"规格差异"。若规格本身不合理，
   先改规格（并同步改 Python 侧与本设计文档），再让两边一致——**不允许"改一边了事"**。
 
 ### 6.3 回归网
 
-现在的测试分三类，迁移时处置各不相同：
+现在的测试分以下类别，迁移时处置各不相同：
 
 | 类别 | 位置 | 迁移时怎么处置 |
 |---|---|---|
-| **黑盒脚本套件** | `tests/test_all.py`、`tests/test_backends.py` | **原封不动地指向新二进制**——驱动子进程、跟 MCP 说 JSON-RPC、跟代理对管道，与实现语言无关。这是本次迁移最大的风险缓冲 |
+| **行为与内部混合套件** | `tests/test_all.py`、`tests/test_backends.py` | 前者的 Python 启动命令需抽象为 CLI/hook/MCP/proxy 驱动；后者直接 import 模块并修改全局变量，内部断言移植为 Rust 单元测试，公共行为用适配驱动验证；pyast/插件专项随明确退役迁出 |
 | **装卸往返** | `tests/test_install.py` | 指向新二进制的 `install` / `uninstall`，作为**切片 G 的验收标准** |
 | **注册表自检** | `tests/test_registry.py` | 随实现语言迁移：现在盯的是 Python 的 `tools.TOOLS`，Rust 版要写等价的（盯 Rust 侧的注册表） |
 | **文档闸门** | `tests/test_facts.py` | 留在 Python（开发期工具），但**迁移后必须跟着改**：`scripts/facts.py` 的 `RUNTIME_MODULES` 从 12 个 Python 模块变成 1 个 Rust crate，文档里的行数/模块数口径全变 |
 
-> 迁移不是"重写后再想办法测"，而是"保持测试不变，换掉被测对象"。
+> 保留适用的行为断言，适配驱动并移植内部测试；检查数量是现有基线，不是终局必须凑齐的数字。
 
 需要额外补的是 Rust 自身的单元测试（并发、`unsafe`、整数溢出这些 Python 侧不存在的问题），
 尤其是分块启发式（切片 A）——它目前只有间接覆盖。
@@ -370,15 +432,15 @@ CLI 有两种形态，**逻辑只有一份**（都在库里，薄 CLI 与主二�
 
 | 层次 | 手段 | 覆盖 |
 |---|---|---|
-| 外部行为 | 145 项黑盒测试 | 端到端：hook 拒绝、MCP 响应、CLI 输出、索引一致性、预算、转存 |
+| 外部行为 | 现有检查中适用的行为断言 + PCRE2 契约用例 | 端到端：hook 拒绝、MCP 响应、CLI 输出、索引一致性、预算、转存 |
 | 切片行为 | 对拍护栏（§6.2） | 逐字段/逐行/逐字节 |
 | 单元行为 | Rust 单元测试 + cargo test | 启发式边界、序列化、错误处理 |
 
 ## 8. 风险登记
 
-### 8.1 分块启发式的正则含前瞻（切片 A）——已评估：难度不大，改写即可
+### 8.1 分块器内部固定正则含前瞻（切片 A）——已评估：难度不大，改写即可
 
-全仓只有 **3 处前瞻**；后顾、原子组、条件组、反向引用、`\Z`/`\A` 逐类查过，**均为 0 次**。
+历史盘点的分块启发式固定正则只有 **3 处前瞻**（不包括用户搜索 pattern）；后顾、原子组、条件组、反向引用、`\Z`/`\A` 逐类查过，**均为 0 次**。
 Rust 的 `regex` crate 只缺这 3 处：
 
 | 位置 | 前瞻 | 语义 | 等价改写 |
@@ -393,7 +455,7 @@ Rust 的 `regex` crate 只缺这 3 处：
 **已验证**：在 2,902 行语料（7 个源文件的真实代码 + 32 条边界用例）上，
 三处改写与原正则的判定**全部一致，0 处不一致**。
 
-**结论：改写，不引入 `fancy-regex`。** 理由：
+**分块器结论：改写，不引入 `fancy-regex`。用户搜索使用 PCRE2（§5.5），不受这里的内部正则选择限制。** 理由：
 
 - 不引入回溯型依赖（`fancy-regex` 是回溯实现，长输入上可能退化）
 - 改写后的逻辑是"词"级别的判断，比正则里的字符类更直白
@@ -420,7 +482,7 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
    用于声明提取后端。Rust 侧不做插件机制（若要保留，需走 dylib ABI，复杂度陡增）。
    连带作废的还有"项目级配置只接受内置后端名"这条安全策略（因为不再有插件可加载）。
 2. **pyast 后端作废**，后端统一用 tree-sitter。代价：失去"零依赖的精确 Python 分块"
-   （tree-sitter 是必需依赖）。收益：tree-sitter 原生支持 Rust，
+   （精确声明后端需要编译进 tree-sitter；启发式路径仍可独立构建）。收益：tree-sitter 原生支持 Rust，
    `backend_ts.py` 目前"只用假节点测过、真实语法节点名未实测"的状态可以在 Rust 侧一次性解决。
 3. **声明提取后端的版本与选项**（`descend_functions`、`max_depth`）语义保持不变，
    但索引签名（`meta.sig`）会变 → 旧索引自动失效重建。
@@ -430,10 +492,10 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | 分发：二进制要按平台构建 | macOS arm64/x86_64、Linux gnu/musl、Windows | 渐进期"可选安装"（见 §10）；终局由 CI 出多平台产物 |
-| 行为漂移 | 模型看到的目录与拒绝消息变了 | 对拍护栏 + 145 项黑盒测试；差异必须归因 |
-| 迁移期双实现并存 | 代码量临时增加，看起来更复杂 | 明确这是**过渡态**；每片迁完即删 Python 侧。薄 CLI 与主二进制共用同一个库，不产生第三份实现 |
+| 行为漂移 | 模型看到的目录与拒绝消息变了 | 对拍护栏 + 适配后的行为套件；PCRE2 与退役后端的差异必须归因 |
+| 迁移期双实现并存 | 代码量临时增加，看起来更复杂 | 明确这是**过渡态**；切片通过后启用 Rust，Python fallback 保留至 G 切换与最终验收后统一删除。薄 CLI 与主二进制共用同一个库，不产生第三份实现 |
 | 树结构启发式的隐性知识 | `lib.py` 的 `_split_region` / `_merge` / `_windows` 逻辑微妙 | 迁移前先补 Python 侧的单元测试，把现有行为钉死 |
-| 插件用户 | 少数依赖自定义后端的人会失去能力 | README 明确说明；如确有需求，可保留一个 Python 侧"后端子进程"作为过渡 |
+| 插件用户 | 少数依赖自定义后端的人会失去能力 | README 与发布说明明确告知，按已决策不新增 Python 插件桥接 |
 
 ## 9. 明确不迁的部分
 
@@ -449,7 +511,7 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
 
 ### 10.1 渐进期：可选安装 + Python 兜底
 
-每个 Rust 片都是独立可执行文件，Python 侧用 `shutil.which()` 探测：
+需要跨语言调用的 Rust 切片提供薄入口，Python 侧探测可执行文件及协议/版本兼容性；Rust 内部不启子进程：
 
 ```
 探测到 ctxguard-chunk  → 调它
@@ -460,7 +522,9 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
 - **纯 Python 用户完全不受影响**——不需要装任何东西，行为不变
 - 迁移可以任意暂停或回退
 - 分发问题被降级成"可选安装"，不必一次解决
-- 每个 Rust crate 可以独立发版，与 Python 侧版本节奏解耦
+- 一个 crate 统一版本，薄 bin 可分别安装；不存在切片独立发版与版本协商
+- 缺少或版本不兼容时使用 Python fallback；Rust 已开始执行后遇到查询/文件错误，必须上报，不静默换引擎
+- 只有最终切换完成才统一删除 Python fallback，避免纯 Python 用户被中途破坏
 
 ### 10.2 终局
 
@@ -469,7 +533,8 @@ Rust 的 `shell-words` 等价物**没有** `punctuation_chars` 语义，切分�
   后者把前者做的事原样撤回
 - `install.py` 退役（过渡期保留，Python 版工具仍靠它安装）
 - Python 版本下限、解释器探测、导入失败 fail-open 那一整套**全部删除**
-- hook 命令变成 `ctxguard guard`，MCP 命令变成 `ctxguard mcp`
+- PreToolUse 为 `ctxguard guard`，SessionStart 为 `ctxguard session-start`，MCP 为 `ctxguard mcp`
+- PCRE2 随交付物链接；“无解释器”不等于没有操作系统基础库，构建与交付验证见 Future
 
 ### 10.3 关于"打包"
 
@@ -479,13 +544,11 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 
 ## 11. 迁移前可独立收获的改进（与 Rust 无关）
 
-这些现在就能做，且**应该先做**——否则迁移的收益会被实现缺陷掩盖：
+待实现条目集中见 [Future](future.md)，本节只说明前置依赖：
 
-1. **search 的连接复用**：`_hit_chunks()` 每个命中文件重开一次 SQLite。
-   改为复用连接 + 批量查询 → 21.4 s → ~12 s（纯 Python）。
-2. **search 的超时预算**：现状 15 s 会截断结果，模型拿到残缺命中却不自知。
-   要么提高预算，要么在超时后明确告知"已截断"（现状有 `timed_out` 标记，但输出里没说清楚）。
-3. **分块启发式的单元测试**：现状只有间接覆盖。迁移前先在 Python 侧钉死行为。
+1. 复测 §1.2 的历史基线，核验连接复用收益；不承诺未经测量的“21.4 s → 12 s”。
+2. 保留已有超时提示，补实际已扫描数与终止原因，不把部分结果称为完整结果。
+3. 补分块启发式与搜索兼容语料，再改造测试驱动，之后开始 A/C 实现。
 
 ## 12. 已决策与待定
 
@@ -494,11 +557,11 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 | 决策 | 内容 |
 |---|---|
 | D1 | 渐进迁移到 Rust，不做一次性重写 |
-| D2 | 切分为 A–F 六片，按"可交付、可回退"推进，Rust 片之间用 JSON 通信 |
+| D2 | 切分为 A–G 七片，按“可交付、可回退”推进；JSON 仅用于 Python/Rust 数据进程边界，Rust 模块直接调库 |
 | D3 | **接受自定义 Python 后端插件作废** |
 | D4 | **后端统一用 tree-sitter**，pyast 后端作废 |
 | D5 | 性能不是目标，单一实现与无解释器依赖才是 |
-| D6 | 行为不变是硬约束，145 项黑盒测试是验收标准 |
+| D6 | 兼容行为是硬约束；现有检查按行为/内部断言分类移植，PCRE2 与后端退役例外显式验收 |
 | D7 | 先写设计文档，评审后再开工 |
 | D8 | 每个 Rust 片都是**库函数 + 薄 CLI**；薄 CLI 只做参数解析、调用、序列化，后期整合即"加子命令" |
 | D9 | 后端不设"Python 子进程过渡"方案——迁移方向已决定它（见下） |
@@ -506,6 +569,8 @@ Rust 迁移顺带解决这两点，所以不再单独做 Python 打包。
 | D11 | 暂不做 OS 绑定：多平台产物是 future，当前只保证开发机可跑 |
 | D12 | 拒绝消息的渲染放进 Rust **库**——薄 CLI 与主二进制共用同一份格式定义 |
 | D13 | 依赖策略：有成熟的同类 crate 就用，没有才手写；单 crate 单 lib（切片是模块，不是独立 crate），集成时只重新封装上层，库不动 |
+| D15 | 搜索复用 ripgrep 库，用户正则固定 PCRE2；范围、段映射和输出预算由 ctxguard 管理；tgrep/fff 仅为 Future 候选 |
+| D16 | Python fallback 保留至最终切换；运行时错误显式报告，不静默降级到其他引擎 |
 | D14 | **安装与卸载一并迁到 Rust**（新增切片 G，排在迁移顺序最后）。原判"install.py 留在 Python 最省事"是错的：卸载是同一个安装的另一半，终局用户手里是二进制，卸载却要跑 Python 脚本，"用户机器不需要 Python"就落不了地 |
 
 ### 待定
@@ -556,13 +621,15 @@ tools/parity.py         # 对拍护栏（§6.2）
 
 | 维度 | 现状 | 终局 |
 |---|---|---|
-| 运行时依赖 | Python 3.13+（用户机器） | 无（单二进制） |
+| 运行时依赖 | Python 3.13+（用户机器） | 无 Python/外部 rg；PCRE2 随产物链接，OS 基础库依赖需验证 |
 | 投放物 | 11 个 `.py` + 配置 | 1 个二进制 + 配置 |
 | 类型检查 | ruff + ty（靠标注自觉） | 编译器强制 |
 | hook / MCP / CLI 实现 | 三处（tools.py 共享工具层，但入口各自拼装） | 一处 |
 | 解释器探测 | install.py ~50 行 | 无 |
 | 导入失败 fail-open | 存在（已修一处） | 不存在（无导入期） |
-| 坏配置 | 已改为退回默认 + 警告 | 启动期即可硬失败 |
+| 坏配置 | 项目/用户项退回默认 + 警告 | 保持显式校验、默认回退与告警；不因换语言直接改为硬失败 |
 | search（53k 文件） | 21.4 s（超时截断） | 目标 < 3 s |
 | hook 延迟 | 27.2 ms | 目标 < 5 ms |
 | 索引（53k 文件） | 45.8 s（建不完） | 目标 < 12 s |
+
+性能目标属于待复测目标，不是已达成指标。后续工作统一见 [Future](future.md)。
