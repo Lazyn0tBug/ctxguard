@@ -58,6 +58,9 @@ SessionStart 注入目录概览、主线程**累计读取预算**（防止“分
 - `allow`：允许整份读取的路径（glob）
 - 环境变量：`CTXGUARD_ROOT`、`CTXGUARD_PROXY_TOK`（代理转存阈值，默认 6000）、`CTXGUARD_BASH=off`
 
+配置项的**类型写错不会让 hook 失效**：非法值退回默认并给出警告（stderr，且 SessionStart
+会回显）。比如 `"max_read_tok": "abc"` 只会退回 4000 并提示，不会让整个读取约束静默消失。
+
 ## 命令行（人工检查索引质量）
 
 ```bash
@@ -72,7 +75,8 @@ python3 .claude/ctxguard/index.py search 'pattern' --path src
    这里的 Bash 拦截是尽力而为；要严格，把 Bash 改为 allowlist，或用沙箱隔离。
 2. **回显是软约束**：模型在答复里贴整份内容发生在生成阶段，hook 管不到，只能靠 CLAUDE.md 规则和“大内容进不了上下文”间接减少。
 3. **token 为估算**（ASCII 约 3.6 字符/token，中日韩约 1 字符/token），与真实计数有偏差，阈值留有余量。
-4. hook 内部异常一律放行（fail-open），避免 hook 自身故障卡死会话。
+4. hook 内部异常一律放行（fail-open），避免 hook 自身故障卡死会话。配置项类型错误是例外：
+   已单独校验并退回默认值，不会走到这条兜底。
 5. 子 agent 的累计读取不计入主线程预算，依赖 hook 输入里的 `agent_id` 字段（在 Claude Code 2.1.322 上未专门验证）。
 6. 单次拒绝本身也会占用少量上下文（目录最多 60 行），这是有意的取舍：用一次小的目录换掉一次大的读取。
 
