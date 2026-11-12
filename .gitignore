@@ -1,4 +1,6 @@
 .venv/
+# 编辑器备份文件
+*~
 __pycache__/
 *.pyc
 .pytest_cache/
